@@ -50,126 +50,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private Queue<Circle> mCircleQRecent;
     private Queue<Circle> mCircleQRecentSignal;
 
-    private class LatLonGridPoint
-    {
-        final int GRID_SCALE = 10000;
-
-        public int iLatGrid;
-        public int iLonGrid;
-
-        public LatLonGridPoint(Location location)
-        {
-            // TODO: Stagger these every other row, so they make a hex pattern
-            iLatGrid = (int) (GRID_SCALE * location.getLatitude()+0.5);
-            iLonGrid = (int) (GRID_SCALE * location.getLongitude()+0.5);
-        }
-
-        public LatLng getLatLng()
-        {
-           return (new LatLng(((double)iLatGrid)/GRID_SCALE, ((double)iLonGrid)/GRID_SCALE));
-        }
-
-        /*
-        public boolean equals(LatLonGridPoint checkSame)
-        {
-            return ((iLatGrid == checkSame.iLatGrid) &&
-                    (iLonGrid == checkSame.iLonGrid));
-        }
-        */
-
-        public int hashCode()
-        {
-            return (iLatGrid*GRID_SCALE*360 + iLonGrid);
-        }
-    }
-
-    private class SignalDataPoint
-    {
-        public Integer mNumSamples;
-        public Integer mTotalDbm;
-        public LatLonGridPoint mLatLonGridPoint;
-
-        public Integer getAverageDbm()
-        {
-            if (mNumSamples > 0)
-            {
-                return mTotalDbm / mNumSamples;
-            }
-            else
-                return 0;
-        }
-    }
-
-    private class SignalData
-    {
-        private Map<Integer, SignalDataPoint> mMapSignalData;
-        private LinkedList<Circle> mCirclesPlotted;
-
-        public void AddMeasuredSignal(Location location, Integer iDbm)
-        {
-            if(location.getAccuracy() > MAX_ACCURACY_FOR_UPDATE)
-                return;
-
-            Integer iWeight = 1;
-
-            if(location.getAccuracy() < MAX_ACCURACY_FOR_UPDATE / 2)
-                iWeight = 4;
-
-            LatLonGridPoint indexGrid = new LatLonGridPoint(location);
-            Integer index = indexGrid.hashCode();
-
-            if (mMapSignalData.containsKey(index))
-            {
-                mMapSignalData.get(index).mNumSamples += iWeight;
-                mMapSignalData.get(index).mTotalDbm += iWeight * iDbm;
-                Log.d("Grid", "Updating Point w/value" + iDbm + " total weight " +
-                        mMapSignalData.get(index).mNumSamples);
-            }
-            else
-            {
-                SignalDataPoint signalDataPoint = new SignalDataPoint();
-                signalDataPoint.mNumSamples = iWeight;
-                signalDataPoint.mTotalDbm = iWeight * iDbm;
-                signalDataPoint.mLatLonGridPoint = indexGrid;
-
-                mMapSignalData.put(index, signalDataPoint);
-                Log.d("Grid", "New Point w/value " + iDbm + " at grid loc " +
-                        indexGrid.iLatGrid + ", " + indexGrid.iLonGrid + ", hash: " + index);
-            }
-        }
-
-        public void DrawCircles(GoogleMap googleMap)
-        {
-            while (mCirclesPlotted.size() > 0) {
-                mCirclesPlotted.remove().remove();
-            }
-
-            for (Map.Entry<Integer, SignalDataPoint> entry : mMapSignalData.entrySet())
-            {
-                int iGreenLevel = entry.getValue().getAverageDbm();
-                LatLng latLng = entry.getValue().mLatLonGridPoint.getLatLng();
-                mCirclesPlotted.add(
-                        googleMap.addCircle(new CircleOptions()
-                                .strokeWidth(2)
-                                .strokeColor(Color.GRAY)
-                                .center(latLng)
-                                .radius(10)
-                                .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
-                if (mCirclesPlotted.size() == 1) {
-                    Log.d("Draw", "StrengthGrid " + mCirclesPlotted.size() + " entries at Lat: " + latLng.latitude);
-                }
-            }
-            Log.d("Draw", "StrengthGrid " + mCirclesPlotted.size() + " entries ");
-        }
-
-        public SignalData()
-        {
-            mMapSignalData = new HashMap<Integer, SignalDataPoint>();
-            mCirclesPlotted = new LinkedList<>();
-        }
-    }
-
-    private SignalData mSignalData;
+    private DataFilterByLatLng mSignalData;
 
     final int MAX_RECENT_CIRCLES = 5;
 
@@ -192,7 +73,10 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mTelephonyManager = (TelephonyManager) this.getSystemService(Context.TELEPHONY_SERVICE);
         mCircleQRecent = new LinkedList<>();
         mCircleQRecentSignal = new LinkedList<>();
-        mSignalData = new SignalData();
+        if (mSignalData == null)
+        {   // only create it the first time, not on portrait/landscape/app-recreate
+            mSignalData = new DataFilterByLatLng();
+        }
     }
 
     /**
@@ -233,6 +117,8 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mMap.addCircle(new CircleOptions()
                 .center(myLatLng)
                 .radius(oldLocation.getAccuracy()));
+
+        mSignalData.DrawCircles(mMap);// refresh after screen orientation change - todo figure out this refresh stuff better
     }
 
     protected void createLocationRequest() {
@@ -249,8 +135,15 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         if (location.getAccuracy() < MAX_ACCURACY_FOR_UPDATE) // good enough accuracy (should use 15, higher for test)
         {
             int iGreenLevel = getLteSignalAsGreenLevel();
+            if(location.getAccuracy() > MAX_ACCURACY_FOR_UPDATE)
+                return;
 
-            mSignalData.AddMeasuredSignal(location, iGreenLevel);
+            int iWeight = 1; // todo - improve crude weighting?
+
+            if(location.getAccuracy() < MAX_ACCURACY_FOR_UPDATE / 2)
+                iWeight = 4;
+
+            mSignalData.AddData(location, iWeight, iGreenLevel);
             mSignalData.DrawCircles(mMap);
 
             mCircleQRecentSignal.add(
@@ -302,7 +195,8 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
                 if (iDbm < 100)
                 {
-                    Log.d("Signal", "Unexpectedly high LTE getDbm signal value: " + iDbm);
+                    Log.d("Signal", "Unexpectedly strong LTE getDbm signal (low) value: " + iDbm +
+                                    " vs. range of ~800-1200 typically expected");
                 }
                 else if (iDbm < minDbmReported)
                 {
