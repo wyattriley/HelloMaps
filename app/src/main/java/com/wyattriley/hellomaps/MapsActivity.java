@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.location.LocationManager;
-import android.support.annotation.NonNull;
 import android.support.v4.app.FragmentActivity;
 import android.os.Bundle;
 
@@ -31,14 +30,11 @@ import android.telephony.CellSignalStrengthLte;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
-import java.util.Collection;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
-import java.util.Vector;
 
 public class MapsActivity extends FragmentActivity implements OnMapReadyCallback,
                                                               GoogleApiClient.ConnectionCallbacks,
@@ -63,6 +59,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         public LatLonGridPoint(Location location)
         {
+            // TODO: Stagger these every other row, so they make a hex pattern
             iLatGrid = (int) (GRID_SCALE * location.getLatitude()+0.5);
             iLonGrid = (int) (GRID_SCALE * location.getLongitude()+0.5);
         }
@@ -168,7 +165,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         public SignalData()
         {
             mMapSignalData = new HashMap<Integer, SignalDataPoint>();
-            mCirclesPlotted = new LinkedList<Circle>();
+            mCirclesPlotted = new LinkedList<>();
         }
     }
 
@@ -193,8 +190,8 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 .build();
 
         mTelephonyManager = (TelephonyManager) this.getSystemService(Context.TELEPHONY_SERVICE);
-        mCircleQRecent = new LinkedList<Circle>();
-        mCircleQRecentSignal = new LinkedList<Circle>();
+        mCircleQRecent = new LinkedList<>();
+        mCircleQRecentSignal = new LinkedList<>();
         mSignalData = new SignalData();
     }
 
@@ -251,7 +248,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         if (location.getAccuracy() < MAX_ACCURACY_FOR_UPDATE) // good enough accuracy (should use 15, higher for test)
         {
-            int iGreenLevel = getGreenLevel();
+            int iGreenLevel = getLteSignalAsGreenLevel();
 
             mSignalData.AddMeasuredSignal(location, iGreenLevel);
             mSignalData.DrawCircles(mMap);
@@ -287,7 +284,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
     }
 
-    protected int getGreenLevel()
+    protected int getLteSignalAsGreenLevel()
     {
         int iGreenLevel = 0;
 
@@ -303,7 +300,11 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 int iDbm = lte.getDbm();
                 Log.d("Strength", "lte strength: lte.getDbm() " +iDbm );
 
-                if (iDbm < minDbmReported)
+                if (iDbm < 100)
+                {
+                    Log.d("Signal", "Unexpectedly high LTE getDbm signal value: " + iDbm);
+                }
+                else if (iDbm < minDbmReported)
                 {
                     minDbmReported = iDbm;
                 }
