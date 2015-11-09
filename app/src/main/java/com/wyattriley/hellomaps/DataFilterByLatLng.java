@@ -8,9 +8,12 @@ import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.model.Circle;
 import com.google.android.gms.maps.model.CircleOptions;
 import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.maps.model.Polygon;
+import com.google.android.gms.maps.model.PolygonOptions;
 
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -28,22 +31,56 @@ public class DataFilterByLatLng {
 
         public LatLonGridPoint(Location location)
         {
-            iLatGrid = (int)Math.round(GRID_SCALE * location.getLatitude());
-            // 0.5 * is to stagger these every other row, so they make a hex pattern
-            iLonGrid = (int)Math.round(GRID_SCALE * location.getLongitude() +
-                                       0.5 * (iLatGrid % 2));
+            // 0.5 * is to stagger these every other column, so they make a hex pattern
+            iLonGrid = (int)Math.round(GRID_SCALE * location.getLongitude());
+            iLatGrid = (int)Math.round(GRID_SCALE * location.getLatitude()+
+                    0.5 * (iLonGrid % 2));
         }
 
+        private double latGridAsDouble()
+        {
+            return (double)(iLatGrid -  0.5 * (iLonGrid % 2))/GRID_SCALE;
+        }
+        private double lonGridAsDouble()
+        {
+            return ((double)iLonGrid) / GRID_SCALE;
+        }
+        
         public LatLng getLatLng()
         {
             // 0.5 * is to stagger these every other row, so they make a hex pattern
-            return (new LatLng(((double)iLatGrid)/GRID_SCALE,
-                               ((double)iLonGrid -  0.5 * (iLatGrid % 2))/GRID_SCALE));
+            return (new LatLng(latGridAsDouble(),
+                               lonGridAsDouble()));
         }
 
         public int hashCode()
         {
             return (iLatGrid*GRID_SCALE*360 + iLonGrid);
+        }
+
+        // hexagon
+        public List<LatLng> getLatLngPoly()
+        {
+            List<LatLng> listLatLng = new LinkedList<>();
+            final double dLatOffset = (1.0/GRID_SCALE) /2.0;
+            final double dLonOffset = (1.0/GRID_SCALE) /3.0;
+            
+            // right to bottom
+            listLatLng.add(new LatLng(latGridAsDouble(),
+                                      lonGridAsDouble() + 2.0 * dLonOffset));
+            listLatLng.add(new LatLng(latGridAsDouble() - 1.0 * dLatOffset,
+                                      lonGridAsDouble() + 1.0 * dLonOffset));
+            listLatLng.add(new LatLng(latGridAsDouble() - 1.0 * dLatOffset,
+                                      lonGridAsDouble() - 1.0 * dLonOffset));
+            // left toward top
+            listLatLng.add(new LatLng(latGridAsDouble(),
+                                      lonGridAsDouble() - 2.0 * dLonOffset));
+            listLatLng.add(new LatLng(latGridAsDouble() + 1.0 * dLatOffset,
+                                      lonGridAsDouble() - 1.0 * dLonOffset));
+            listLatLng.add(new LatLng(latGridAsDouble() + 1.0 * dLatOffset,
+                                      lonGridAsDouble() + 1.0 * dLonOffset));
+            
+            return listLatLng;
         }
     }
 
@@ -55,6 +92,10 @@ public class DataFilterByLatLng {
         public LatLng getLatLng()
         {
             return mLatLonGridPoint.getLatLng();
+        }
+        public List<LatLng> getLatLngPoly()
+        {
+            return  mLatLonGridPoint.getLatLngPoly();
         }
 
         public DataPoint(Location location)
@@ -87,7 +128,7 @@ public class DataFilterByLatLng {
     }
 
     private Map<Integer, DataPoint> mMapSignalData;
-    private LinkedList<Circle> mCirclesPlotted;
+    private LinkedList<Polygon> mShapesPlotted;
 
     public void AddData(Location location, int iWeight, int iValue)
     {
@@ -111,11 +152,11 @@ public class DataFilterByLatLng {
         }
     }
 
-    public void DrawCircles(GoogleMap googleMap)
+    public void drawShapes(GoogleMap googleMap)
     {
         // remove them all
-        while (mCirclesPlotted.size() > 0) {
-            mCirclesPlotted.remove().remove();
+        while (mShapesPlotted.size() > 0) {
+            mShapesPlotted.remove().remove();
         }
 
         // and redraw them all - very inefficient...
@@ -129,6 +170,8 @@ public class DataFilterByLatLng {
         {
             int iGreenLevel = entry.getValue().getAve();
             LatLng latLng = entry.getValue().getLatLng();
+
+            /*
             mCirclesPlotted.add(
                     googleMap.addCircle(new CircleOptions() // todo - add rectangle of approp. size
                             .strokeWidth(2)
@@ -136,16 +179,26 @@ public class DataFilterByLatLng {
                             .center(latLng)
                             .radius(10)
                             .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
-            if (mCirclesPlotted.size() == 1) {
-                Log.d("Draw", "StrengthGrid " + mCirclesPlotted.size() + " entries at Lat: " + latLng.latitude);
+            */
+            mShapesPlotted.add(
+                    googleMap.addPolygon(new PolygonOptions()
+                            .strokeWidth(1)
+                            .strokeColor(Color.GRAY)
+                            .addAll(entry.getValue().getLatLngPoly())
+                            .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
+            
+            // todo - debug why some aren't draw after rotate
+            if (mShapesPlotted.size() <= 3) {
+                Log.d("Draw", "StrengthGrid " + mShapesPlotted.size() +
+                              " entries at Lat: " + latLng.latitude + " Lon: " + latLng.longitude);
             }
         }
-        Log.d("Draw", "StrengthGrid " + mCirclesPlotted.size() + " entries ");
+        Log.d("Draw", "StrengthGrid " + mShapesPlotted.size() + " entries ");
     }
 
     public DataFilterByLatLng()
     {
         mMapSignalData = new HashMap<>();
-        mCirclesPlotted = new LinkedList<>();
+        mShapesPlotted = new LinkedList<>();
     }
 }

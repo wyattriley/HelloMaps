@@ -41,6 +41,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                                                               GoogleApiClient.OnConnectionFailedListener,
                                                               LocationListener
 {
+    // good enough accuracy (should use ~15, higher for test) - and/or spread across small bins
     final Integer MAX_ACCURACY_FOR_UPDATE = 25; // meters
 
     private GoogleMap mMap;
@@ -52,7 +53,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
     private DataFilterByLatLng mSignalData;
 
-    final int MAX_RECENT_CIRCLES = 5;
+    final int MAX_RECENT_CIRCLES = 2;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -118,7 +119,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 .center(myLatLng)
                 .radius(oldLocation.getAccuracy()));
 
-        mSignalData.DrawCircles(mMap);// refresh after screen orientation change - todo figure out this refresh stuff better
+        mSignalData.drawShapes(mMap);// refresh after screen orientation change - todo figure out this refresh stuff better
     }
 
     protected void createLocationRequest() {
@@ -132,11 +133,11 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         updateRecentCircles(location);
 
-        if (location.getAccuracy() < MAX_ACCURACY_FOR_UPDATE) // good enough accuracy (should use 15, higher for test)
+        if (location.getAccuracy() < MAX_ACCURACY_FOR_UPDATE)
         {
             int iGreenLevel = getLteSignalAsGreenLevel();
             if(location.getAccuracy() > MAX_ACCURACY_FOR_UPDATE)
-                return;
+                return; // todo - overlay some text on the google map for status
 
             int iWeight = 1; // todo - improve crude weighting?
 
@@ -144,7 +145,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 iWeight = 4;
 
             mSignalData.AddData(location, iWeight, iGreenLevel);
-            mSignalData.DrawCircles(mMap);
+            mSignalData.drawShapes(mMap);
 
             mCircleQRecentSignal.add(
                     mMap.addCircle(new CircleOptions()
