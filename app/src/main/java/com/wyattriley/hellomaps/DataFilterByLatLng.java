@@ -10,7 +10,9 @@ import com.google.android.gms.maps.model.CircleOptions;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Polygon;
 import com.google.android.gms.maps.model.PolygonOptions;
+import com.google.android.gms.maps.model.internal.zzg;
 
+import java.io.Serializable;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -19,9 +21,9 @@ import java.util.Map;
 /**
  * Created by wyatt_000 on 11/8/2015.
  */
-public class DataFilterByLatLng {
+public class DataFilterByLatLng implements Serializable {
 
-    private class LatLonGridPoint
+    private class LatLonGridPoint implements Serializable
     {
         // TODO: Make this flexible, upon instantiation, and do a 100, 1000, and 10,000 levels?
         final int GRID_SCALE = 10000;
@@ -84,7 +86,7 @@ public class DataFilterByLatLng {
         }
     }
 
-    private class DataPoint {
+    private class DataPoint implements Serializable {
         private int mNumSamples;
         private long mTotal;
         private LatLonGridPoint mLatLonGridPoint;
@@ -128,7 +130,7 @@ public class DataFilterByLatLng {
     }
 
     private Map<Integer, DataPoint> mMapSignalData;
-    private LinkedList<Polygon> mShapesPlotted;
+    transient private LinkedList<Polygon> mShapesPlotted;
 
     public void AddData(Location location, int iWeight, int iValue)
     {
@@ -154,6 +156,10 @@ public class DataFilterByLatLng {
 
     public void drawShapes(GoogleMap googleMap)
     {
+        // recreate list post deserialization
+        if (mShapesPlotted == null) {
+            mShapesPlotted = new LinkedList<>();
+        }
         // remove them all
         while (mShapesPlotted.size() > 0) {
             mShapesPlotted.remove().remove();
@@ -161,7 +167,6 @@ public class DataFilterByLatLng {
 
         // and redraw them all - very inefficient...
         // todo: only remove & add those that changed?
-        // todo: draw polygon rectangles, not circles
         // todo: remove lines on shape edge - and later add back a line at a significant change in sig strength?
         // todo: only draw those on screen
         // todo: only draw first 1000?
@@ -171,15 +176,6 @@ public class DataFilterByLatLng {
             int iGreenLevel = entry.getValue().getAve();
             LatLng latLng = entry.getValue().getLatLng();
 
-            /*
-            mCirclesPlotted.add(
-                    googleMap.addCircle(new CircleOptions() // todo - add rectangle of approp. size
-                            .strokeWidth(2)
-                            .strokeColor(Color.GRAY)
-                            .center(latLng)
-                            .radius(10)
-                            .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
-            */
             mShapesPlotted.add(
                     googleMap.addPolygon(new PolygonOptions()
                             .strokeWidth(1)
@@ -187,11 +183,6 @@ public class DataFilterByLatLng {
                             .addAll(entry.getValue().getLatLngPoly())
                             .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
             
-            // todo - debug why some aren't draw after rotate
-            if (mShapesPlotted.size() <= 3) {
-                Log.d("Draw", "StrengthGrid " + mShapesPlotted.size() +
-                              " entries at Lat: " + latLng.latitude + " Lon: " + latLng.longitude);
-            }
         }
         Log.d("Draw", "StrengthGrid " + mShapesPlotted.size() + " entries ");
     }

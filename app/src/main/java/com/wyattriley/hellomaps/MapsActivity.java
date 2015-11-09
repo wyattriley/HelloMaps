@@ -30,6 +30,10 @@ import android.telephony.CellSignalStrengthLte;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -54,10 +58,14 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private DataFilterByLatLng mSignalData;
 
     final int MAX_RECENT_CIRCLES = 2;
+    final String FILENAME = "saved_data_map";
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(Bundle savedInstanceState)
+    {
         super.onCreate(savedInstanceState);
+        Log.d("on", "onCreate");
+
         setContentView(R.layout.activity_maps);
         // Obtain the SupportMapFragment and get notified when the map is ready to be used.
         SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
@@ -74,9 +82,22 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mTelephonyManager = (TelephonyManager) this.getSystemService(Context.TELEPHONY_SERVICE);
         mCircleQRecent = new LinkedList<>();
         mCircleQRecentSignal = new LinkedList<>();
-        if (mSignalData == null)
-        {   // only create it the first time, not on portrait/landscape/app-recreate
-            mSignalData = new DataFilterByLatLng();
+        mSignalData = new DataFilterByLatLng();
+
+        try
+        {
+            FileInputStream fis = openFileInput(FILENAME);
+            ObjectInputStream ois = new ObjectInputStream(fis);
+            mSignalData = (DataFilterByLatLng) ois.readObject();
+            ois.close();
+        }
+        catch (java.io.IOException e)
+        {
+            Log.d("File", "Couldn't read data from " + FILENAME + " " + e.getMessage());
+        }
+        catch (ClassNotFoundException e)
+        {
+            Log.d("File", "Couldn't read data from " + FILENAME + " " + e.getMessage());
         }
     }
 
@@ -90,7 +111,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
      * installed Google Play services and returned to the app.
      */
     @Override
-    public void onMapReady(GoogleMap googleMap) {
+    public void onMapReady(GoogleMap googleMap)
+    {
+        Log.d("on", "onMapReady");
         mMap = googleMap;
 
         // Enable MyLocation Layer of Google Map
@@ -110,16 +133,19 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         // Add a marker in at My Location and move the camera
         LatLng myLatLng = new LatLng(oldLocation.getLatitude(), oldLocation.getLongitude());
-        mMap.addMarker(new MarkerOptions().position(myLatLng).title(
-                "My Last Known Location on Map Ready" /* at accuracy " + mLastLocation.getAccuracy() */));
         mMap.moveCamera(CameraUpdateFactory.newLatLng(myLatLng));
         mMap.moveCamera(CameraUpdateFactory.zoomTo(19));
 
+        /* For debug - a starting Hello Maps marker
+
+        mMap.addMarker(new MarkerOptions().position(myLatLng).title(
+                "My Last Known Location on Map Ready" at accuracy " + mLastLocation.getAccuracy() ));
+
         mMap.addCircle(new CircleOptions()
                 .center(myLatLng)
-                .radius(oldLocation.getAccuracy()));
+                .radius(oldLocation.getAccuracy()));*/
 
-        mSignalData.drawShapes(mMap);// refresh after screen orientation change - todo figure out this refresh stuff better
+        mSignalData.drawShapes(mMap);// refresh after screen orientation change
     }
 
     protected void createLocationRequest() {
@@ -129,6 +155,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
     }
     public void onLocationChanged(Location location) {
+        Log.d("on", "onLocationChanged");
         LatLng myLatLng = new LatLng(location.getLatitude(), location.getLongitude());
 
         updateRecentCircles(location);
@@ -184,6 +211,11 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         List<CellInfo> listCellInfo = mTelephonyManager.getAllCellInfo();
         Log.d("Strength", "Getting Cell Info");
+        if (listCellInfo == null)
+        {
+            Log.d("Telephony", "Telephony Mgr. returned a NULL list of cell info");
+            return iGreenLevel;
+        }
 
         int minDbmReported = 9999;
 
@@ -224,19 +256,42 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     @Override
     public void onStart() {
         super.onStart();
-        Log.d("?", "onStart fired ..............");
+        Log.d("on", "onStart fired ..............");
         mGoogleApiClient.connect();
     }
 
+    public void onPause() {
+        super.onPause();
+        Log.d("on", "onPause fired ..............");
+
+        LocationServices.FusedLocationApi.removeLocationUpdates(
+                mGoogleApiClient, this);
+
+        try
+        {
+            FileOutputStream fos = openFileOutput(FILENAME, Context.MODE_PRIVATE);
+            ObjectOutputStream oos = new ObjectOutputStream(fos);
+            oos.writeObject(mSignalData);
+            oos.close();
+        }
+        catch (java.io.IOException e)
+        {
+            Log.d("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
+        }
+    }
+
     @Override
-    public void onConnected(Bundle bundle) {
-        Log.d("?", "onConnected - isConnected ...............: " + mGoogleApiClient.isConnected());
+    public void onConnected(Bundle bundle)
+    {
+        Log.d("on", "onConnected (GoogleApiClient) - isConnected ...............: " + mGoogleApiClient.isConnected());
         LocationServices.FusedLocationApi.requestLocationUpdates(
                 mGoogleApiClient, mLocationRequest, this);
     }
 
     @Override
     public void onConnectionSuspended(int i) {
+        Log.d("on", "onConnectedSuspended (GoogleApiClient) - isConnected ...............: " + mGoogleApiClient.isConnected());
+
 
     }
 
