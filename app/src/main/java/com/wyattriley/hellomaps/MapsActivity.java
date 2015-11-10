@@ -17,10 +17,10 @@ import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.OnMapReadyCallback;
 import com.google.android.gms.maps.SupportMapFragment;
+import com.google.android.gms.maps.model.CameraPosition;
 import com.google.android.gms.maps.model.Circle;
 import com.google.android.gms.maps.model.CircleOptions;
 import com.google.android.gms.maps.model.LatLng;
-import com.google.android.gms.maps.model.MarkerOptions;
 
 import android.location.Location;
 import android.support.v4.content.ContextCompat;
@@ -34,10 +34,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.Queue;
 
 public class MapsActivity extends FragmentActivity implements OnMapReadyCallback,
@@ -56,6 +54,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private Queue<Circle> mCircleQRecentSignal;
 
     private DataFilterByLatLng mSignalData;
+    private float mCurrentZoom; // for redraw on zoom
 
     final int MAX_RECENT_CIRCLES = 2;
     final String FILENAME = "saved_data_map";
@@ -91,11 +90,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             mSignalData = (DataFilterByLatLng) ois.readObject();
             ois.close();
         }
-        catch (java.io.IOException e)
-        {
-            Log.d("File", "Couldn't read data from " + FILENAME + " " + e.getMessage());
-        }
-        catch (ClassNotFoundException e)
+        catch (java.io.IOException | ClassNotFoundException e)
         {
             Log.d("File", "Couldn't read data from " + FILENAME + " " + e.getMessage());
         }
@@ -104,8 +99,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     /**
      * Manipulates the map once available.
      * This callback is triggered when the map is ready to be used.
-     * This is where we can add markers or lines, add listeners or move the camera. In this case,
-     * we just add a marker near Sydney, Australia.
+     * This is where we can add markers or lines, add listeners or move the camera.
      * If Google Play services is not installed on the device, the user will be prompted to install
      * it inside the SupportMapFragment. This method will only be triggered once the user has
      * installed Google Play services and returned to the app.
@@ -136,6 +130,19 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mMap.moveCamera(CameraUpdateFactory.newLatLng(myLatLng));
         mMap.moveCamera(CameraUpdateFactory.zoomTo(19));
 
+        mMap.setOnCameraChangeListener(new GoogleMap.OnCameraChangeListener() {
+            @Override
+            public void onCameraChange(CameraPosition cameraPosition)
+            {
+                if (cameraPosition.zoom != mCurrentZoom)
+                {
+                    mCurrentZoom = cameraPosition.zoom;
+                    mSignalData.drawShapes(mMap);
+                }
+
+            }
+        });
+
         /* For debug - a starting Hello Maps marker
 
         mMap.addMarker(new MarkerOptions().position(myLatLng).title(
@@ -160,18 +167,11 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         updateRecentCircles(location);
 
-        if (location.getAccuracy() < MAX_ACCURACY_FOR_UPDATE)
+        int iGreenLevel = getLteSignalAsGreenLevel();
+
+        if (mSignalData.AddData(location, iGreenLevel))
         {
-            int iGreenLevel = getLteSignalAsGreenLevel();
-            if(location.getAccuracy() > MAX_ACCURACY_FOR_UPDATE)
-                return; // todo - overlay some text on the google map for status
-
-            int iWeight = 1; // todo - improve crude weighting?
-
-            if(location.getAccuracy() < MAX_ACCURACY_FOR_UPDATE / 2)
-                iWeight = 4;
-
-            mSignalData.AddData(location, iWeight, iGreenLevel);
+            // some data was added
             mSignalData.drawShapes(mMap);
 
             mCircleQRecentSignal.add(
@@ -264,8 +264,11 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         super.onPause();
         Log.d("on", "onPause fired ..............");
 
-        LocationServices.FusedLocationApi.removeLocationUpdates(
-                mGoogleApiClient, this);
+        if (mGoogleApiClient.isConnected())
+        {
+            LocationServices.FusedLocationApi.removeLocationUpdates(
+                    mGoogleApiClient, this);
+        }
 
         try
         {

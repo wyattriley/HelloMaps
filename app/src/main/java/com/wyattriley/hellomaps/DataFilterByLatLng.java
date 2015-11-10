@@ -5,14 +5,13 @@ import android.location.Location;
 import android.util.Log;
 
 import com.google.android.gms.maps.GoogleMap;
-import com.google.android.gms.maps.model.Circle;
-import com.google.android.gms.maps.model.CircleOptions;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Polygon;
 import com.google.android.gms.maps.model.PolygonOptions;
 import com.google.android.gms.maps.model.internal.zzg;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -26,26 +25,30 @@ public class DataFilterByLatLng implements Serializable {
     private class LatLonGridPoint implements Serializable
     {
         // TODO: Make this flexible, upon instantiation, and do a 100, 1000, and 10,000 levels?
-        final int GRID_SCALE = 10000;
+        final int iScaleWorldMultDefault = 1 << 22;
+        private double dGridScale = iScaleWorldMultDefault / 360.0;
 
         private int iLatGrid;
         private int iLonGrid;
 
-        public LatLonGridPoint(Location location)
+        public LatLonGridPoint(Location location, int iScaleExponent)
         {
+            final int iScaleWorldMult = 1 << iScaleExponent;
+            dGridScale = iScaleWorldMult / 360.0;
+
             // 0.5 * is to stagger these every other column, so they make a hex pattern
-            iLonGrid = (int)Math.round(GRID_SCALE * location.getLongitude());
-            iLatGrid = (int)Math.round(GRID_SCALE * location.getLatitude()+
+            iLonGrid = (int)Math.round(dGridScale * location.getLongitude());
+            iLatGrid = (int)Math.round(dGridScale * location.getLatitude()+
                     0.5 * (iLonGrid % 2));
         }
 
         private double latGridAsDouble()
         {
-            return (double)(iLatGrid -  0.5 * (iLonGrid % 2))/GRID_SCALE;
+            return (double)(iLatGrid -  0.5 * (iLonGrid % 2)) / dGridScale;
         }
         private double lonGridAsDouble()
         {
-            return ((double)iLonGrid) / GRID_SCALE;
+            return ((double)iLonGrid) / dGridScale;
         }
         
         public LatLng getLatLng()
@@ -55,17 +58,17 @@ public class DataFilterByLatLng implements Serializable {
                                lonGridAsDouble()));
         }
 
-        public int hashCode()
+        public long hashForIndexing()
         {
-            return (iLatGrid*GRID_SCALE*360 + iLonGrid);
+            return ((long)(iLatGrid)) << 32 + iLonGrid;
         }
 
         // hexagon
         public List<LatLng> getLatLngPoly()
         {
             List<LatLng> listLatLng = new LinkedList<>();
-            final double dLatOffset = (1.0/GRID_SCALE) /2.0;
-            final double dLonOffset = (1.0/GRID_SCALE) /3.0;
+            final double dLatOffset = (1.0/dGridScale) /2.0;
+            final double dLonOffset = (1.0/dGridScale) /3.0;
             
             // right to bottom
             listLatLng.add(new LatLng(latGridAsDouble(),
@@ -100,10 +103,10 @@ public class DataFilterByLatLng implements Serializable {
             return  mLatLonGridPoint.getLatLngPoly();
         }
 
-        public DataPoint(Location location)
+        public DataPoint(Location location, int iGridScale)
         {
             clearData();
-            mLatLonGridPoint = new LatLonGridPoint(location);
+            mLatLonGridPoint = new LatLonGridPoint(location, iGridScale);
         }
 
         public void clearData()
@@ -129,29 +132,60 @@ public class DataFilterByLatLng implements Serializable {
         }
     }
 
-    private Map<Integer, DataPoint> mMapSignalData;
     transient private LinkedList<Polygon> mShapesPlotted;
 
-    public void AddData(Location location, int iWeight, int iValue)
+    final int[] aiScales = { 18, 19, 20, 21, 22 };
+    final int iNumScales = 5;
+
+    private List<Map<Long, DataPoint>> mListMapSignalData;
+
+    public boolean AddData(Location location, int iValue)
     {
-        LatLonGridPoint indexGrid = new LatLonGridPoint(location);
-        Integer index = indexGrid.hashCode(); // todo fix this for 2^32 rollover
+        boolean boolDataAdded = false;
 
-        if (mMapSignalData.containsKey(index))
+        for (int iScale = 0; iScale < iNumScales; iScale++)
         {
-            mMapSignalData.get(index).addData(iWeight, iValue);
-            Log.d("Grid", "Updating Point w/value" + iValue + " total weight " +
-                    mMapSignalData.get(index).mNumSamples);
-        }
-        else
-        {
-            DataPoint dataPoint = new DataPoint(location);
-            dataPoint.addData(iWeight, iValue);
+            int iGridScale = aiScales[iScale];
+            Map<Long, DataPoint> mMapSignalData = mListMapSignalData.get(iScale);
 
-            mMapSignalData.put(index, dataPoint);
-            Log.d("Grid", "New Point w/value " + iValue + " at grid loc " +
-                    indexGrid.iLatGrid + ", " + indexGrid.iLonGrid + ", hash: " + index);
+            final double dApproxGridSize = 6000000 * 6.28 / (1 << iGridScale);
+
+            Log.d("AddData", "For scale " + iScale + " grid size " + dApproxGridSize);
+
+
+            int iWeight = 1; // default is limited weight for moderate overlap with grid point
+
+            if(location.getAccuracy() > dApproxGridSize * 3.0)
+                continue; // todo - overlay some text on the google map for status of too high to update
+            else if(location.getAccuracy() < dApproxGridSize / 2.0) // nice & tightly inside
+                iWeight = 4;
+            else if(location.getAccuracy() < dApproxGridSize )
+                iWeight  = 2; // somewhat inside
+
+            // todo clean up excess logging
+            Log.d("AddData", "Picked weight " + iWeight);
+            boolDataAdded = true;
+
+            LatLonGridPoint indexGrid = new LatLonGridPoint(location, iGridScale);
+            Long index = indexGrid.hashForIndexing();
+
+            if (mMapSignalData.containsKey(index))
+            {
+                mMapSignalData.get(index).addData(iWeight, iValue);
+                Log.d("Grid", "Updating Point w/value " + iValue + " total weight " +
+                        mMapSignalData.get(index).mNumSamples);
+            }
+            else
+            {
+                DataPoint dataPoint = new DataPoint(location, iGridScale);
+                dataPoint.addData(iWeight, iValue);
+
+                mMapSignalData.put(index, dataPoint);
+                Log.d("Grid", "New Point w/value " + iValue + " at grid loc " +
+                        indexGrid.iLatGrid + ", " + indexGrid.iLonGrid + " hashcode: " + index );
+            }
         }
+        return boolDataAdded;
     }
 
     public void drawShapes(GoogleMap googleMap)
@@ -168,28 +202,49 @@ public class DataFilterByLatLng implements Serializable {
         // and redraw them all - very inefficient...
         // todo: only remove & add those that changed?
         // todo: remove lines on shape edge - and later add back a line at a significant change in sig strength?
-        // todo: only draw those on screen
-        // todo: only draw first 1000?
-        // todo: different scales
-        for (Map.Entry<Integer, DataPoint> entry : mMapSignalData.entrySet())
+        // todo: only draw first 300? - check if ok
+        // todo: test & make work: different scales
+
+        // select which scale to draw from  zoom 18 or smaller -> 22, 17 -> 21, etc.
+        int iScale = 0;
+        while ((iScale < iNumScales - 1) &&
+               (aiScales[iScale] - googleMap.getCameraPosition().zoom < 3)) // while not enough will show, zoom in
+        {
+            iScale++;
+        }
+
+        Map<Long, DataPoint> mMapSignalData = mListMapSignalData.get(iScale);
+
+        for (Map.Entry<Long, DataPoint> entry : mMapSignalData.entrySet())
         {
             int iGreenLevel = entry.getValue().getAve();
             LatLng latLng = entry.getValue().getLatLng();
-
-            mShapesPlotted.add(
-                    googleMap.addPolygon(new PolygonOptions()
-                            .strokeWidth(1)
-                            .strokeColor(Color.GRAY)
-                            .addAll(entry.getValue().getLatLngPoly())
-                            .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
-            
+            if (googleMap.getProjection().getVisibleRegion().latLngBounds.contains(latLng))
+            {
+                mShapesPlotted.add(
+                        googleMap.addPolygon(new PolygonOptions()
+                                .strokeWidth(0)
+                                .strokeColor(Color.GRAY)
+                                .addAll(entry.getValue().getLatLngPoly())
+                                .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
+                if (mShapesPlotted.size() > 200)
+                {
+                    Log.d("Draw", "Too many shapes in visible region, stopping drawing");
+                }
+            }
         }
-        Log.d("Draw", "StrengthGrid " + mShapesPlotted.size() + " entries ");
+        Log.d("Draw", "StrengthGrid " + mShapesPlotted.size() +
+                      " entries at scale index " + iScale +
+                      " at zoom level " + googleMap.getCameraPosition().zoom);
     }
 
     public DataFilterByLatLng()
     {
-        mMapSignalData = new HashMap<>();
+        mListMapSignalData = new ArrayList<>();
+        for (int i = 0; i < iNumScales; i++)
+        {
+            mListMapSignalData.add(new HashMap<Long, DataPoint>());
+        }
         mShapesPlotted = new LinkedList<>();
     }
 }
