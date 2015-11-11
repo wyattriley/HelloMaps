@@ -44,8 +44,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                                                               LocationListener
 {
     // good enough accuracy (should use ~15, higher for test) - and/or spread across small bins
-    final Integer MAX_ACCURACY_FOR_UPDATE = 25; // meters
-
     private GoogleMap mMap;
     private GoogleApiClient mGoogleApiClient;
     private LocationRequest mLocationRequest;
@@ -55,6 +53,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
     private DataFilterByLatLng mSignalData;
     private float mCurrentZoom; // for redraw on zoom
+    private LatLng mCurrentTarget; // for redraw on pan
 
     final int MAX_RECENT_CIRCLES = 2;
     final String FILENAME = "saved_data_map";
@@ -125,18 +124,28 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             oldLocation = locationManager.getLastKnownLocation("gps");
         }
 
-        // Add a marker in at My Location and move the camera
+        //  move the camera and zoom to initial location
         LatLng myLatLng = new LatLng(oldLocation.getLatitude(), oldLocation.getLongitude());
-        mMap.moveCamera(CameraUpdateFactory.newLatLng(myLatLng));
-        mMap.moveCamera(CameraUpdateFactory.zoomTo(19));
+        if ((mCurrentZoom != 0.0) &&
+            (mCurrentTarget != null)) // todo: context-save these values so this actually works
+        {
+            mMap.moveCamera(CameraUpdateFactory.newLatLng(mCurrentTarget));
+            mMap.moveCamera(CameraUpdateFactory.zoomTo(mCurrentZoom));
+        }
+        else {
+            mMap.moveCamera(CameraUpdateFactory.newLatLng(myLatLng));
+            mMap.moveCamera(CameraUpdateFactory.zoomTo(19));
+        }
 
         mMap.setOnCameraChangeListener(new GoogleMap.OnCameraChangeListener() {
             @Override
             public void onCameraChange(CameraPosition cameraPosition)
             {
-                if (cameraPosition.zoom != mCurrentZoom)
+                if ((cameraPosition.zoom != mCurrentZoom)||
+                    (cameraPosition.target != mCurrentTarget))
                 {
                     mCurrentZoom = cameraPosition.zoom;
+                    mCurrentTarget = cameraPosition.target;
                     mSignalData.drawShapes(mMap);
                 }
 
@@ -156,13 +165,20 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     }
 
     protected void createLocationRequest() {
-        mLocationRequest = new LocationRequest();
-        mLocationRequest.setInterval(1000);
-        mLocationRequest.setFastestInterval(1000);
-        mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+        mLocationRequest = new LocationRequest()
+                .setInterval(1000)
+                .setFastestInterval(1000)
+                .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
     }
+
     public void onLocationChanged(Location location) {
         Log.d("on", "onLocationChanged");
+
+        if (mMap == null) // not ready yet
+        {
+            return;
+        }
+
         LatLng myLatLng = new LatLng(location.getLatitude(), location.getLongitude());
 
         updateRecentCircles(location);
@@ -213,7 +229,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         Log.d("Strength", "Getting Cell Info");
         if (listCellInfo == null)
         {
-            Log.d("Telephony", "Telephony Mgr. returned a NULL list of cell info");
+            Log.w("Telephony", "Telephony Mgr. returned a NULL list of cell info");
             return iGreenLevel;
         }
 
@@ -224,11 +240,11 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 CellSignalStrengthLte lte = ((CellInfoLte) cellInfo).getCellSignalStrength();
 
                 int iDbm = lte.getDbm();
-                Log.d("Strength", "lte strength: lte.getDbm() " +iDbm );
+                //Log.d("Strength", "lte strength: lte.getDbm() " +iDbm );
 
                 if (iDbm < 100)
                 {
-                    Log.d("Signal", "Unexpectedly strong LTE getDbm signal (low) value: " + iDbm +
+                    Log.w("Signal", "Unexpectedly strong LTE getDbm signal (low) value: " + iDbm +
                                     " vs. range of ~800-1200 typically expected");
                 }
                 else if (iDbm < minDbmReported)
@@ -279,7 +295,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
         catch (java.io.IOException e)
         {
-            Log.d("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
+            Log.w("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
         }
     }
 

@@ -6,9 +6,9 @@ import android.util.Log;
 
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.maps.model.LatLngBounds;
 import com.google.android.gms.maps.model.Polygon;
 import com.google.android.gms.maps.model.PolygonOptions;
-import com.google.android.gms.maps.model.internal.zzg;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -24,13 +24,13 @@ public class DataFilterByLatLng implements Serializable {
 
     private class LatLonGridPoint implements Serializable
     {
-        // TODO: Make this flexible, upon instantiation, and do a 100, 1000, and 10,000 levels?
         final int iScaleWorldMultDefault = 1 << 22;
         private double dGridScale = iScaleWorldMultDefault / 360.0;
 
         private int iLatGrid;
         private int iLonGrid;
 
+        // same exponent as gmaps for size of screen, but for size of one grid cell
         public LatLonGridPoint(Location location, int iScaleExponent)
         {
             final int iScaleWorldMult = 1 << iScaleExponent;
@@ -44,7 +44,7 @@ public class DataFilterByLatLng implements Serializable {
 
         private double latGridAsDouble()
         {
-            return (double)(iLatGrid -  0.5 * (iLonGrid % 2)) / dGridScale;
+            return (iLatGrid -  0.5 * (iLonGrid % 2)) / dGridScale;
         }
         private double lonGridAsDouble()
         {
@@ -65,7 +65,7 @@ public class DataFilterByLatLng implements Serializable {
 
         // hexagon
         public List<LatLng> getLatLngPoly()
-        {
+        { //todo: as this is always hex, speed up by making array
             List<LatLng> listLatLng = new LinkedList<>();
             final double dLatOffset = (1.0/dGridScale) /2.0;
             final double dLonOffset = (1.0/dGridScale) /3.0;
@@ -150,8 +150,7 @@ public class DataFilterByLatLng implements Serializable {
 
             final double dApproxGridSize = 6000000 * 6.28 / (1 << iGridScale);
 
-            Log.d("AddData", "For scale " + iScale + " grid size " + dApproxGridSize);
-
+            //Log.d("AddData", "For scale " + iScale + " grid size " + dApproxGridSize);
 
             int iWeight = 1; // default is limited weight for moderate overlap with grid point
 
@@ -163,7 +162,7 @@ public class DataFilterByLatLng implements Serializable {
                 iWeight  = 2; // somewhat inside
 
             // todo clean up excess logging
-            Log.d("AddData", "Picked weight " + iWeight);
+            //Log.d("AddData", "Picked weight " + iWeight);
             boolDataAdded = true;
 
             LatLonGridPoint indexGrid = new LatLonGridPoint(location, iGridScale);
@@ -172,8 +171,10 @@ public class DataFilterByLatLng implements Serializable {
             if (mMapSignalData.containsKey(index))
             {
                 mMapSignalData.get(index).addData(iWeight, iValue);
+                /*
                 Log.d("Grid", "Updating Point w/value " + iValue + " total weight " +
-                        mMapSignalData.get(index).mNumSamples);
+                mMapSignalData.get(index).mNumSamples);
+                */
             }
             else
             {
@@ -190,6 +191,11 @@ public class DataFilterByLatLng implements Serializable {
 
     public void drawShapes(GoogleMap googleMap)
     {
+        // start
+        Log.d("Draw", "Start drawShapes....");
+
+        LatLngBounds latLngBounds = googleMap.getProjection().getVisibleRegion().latLngBounds;
+
         // recreate list post deserialization
         if (mShapesPlotted == null) {
             mShapesPlotted = new LinkedList<>();
@@ -207,8 +213,9 @@ public class DataFilterByLatLng implements Serializable {
 
         // select which scale to draw from  zoom 18 or smaller -> 22, 17 -> 21, etc.
         int iScale = 0;
+        float zoom = googleMap.getCameraPosition().zoom;
         while ((iScale < iNumScales - 1) &&
-               (aiScales[iScale] - googleMap.getCameraPosition().zoom < 3)) // while not enough will show, zoom in
+               (aiScales[iScale] - zoom < 3)) // while not enough will show, zoom in
         {
             iScale++;
         }
@@ -219,7 +226,8 @@ public class DataFilterByLatLng implements Serializable {
         {
             int iGreenLevel = entry.getValue().getAve();
             LatLng latLng = entry.getValue().getLatLng();
-            if (googleMap.getProjection().getVisibleRegion().latLngBounds.contains(latLng))
+
+            if (latLngBounds.contains(latLng))
             {
                 mShapesPlotted.add(
                         googleMap.addPolygon(new PolygonOptions()
@@ -227,15 +235,16 @@ public class DataFilterByLatLng implements Serializable {
                                 .strokeColor(Color.GRAY)
                                 .addAll(entry.getValue().getLatLngPoly())
                                 .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
-                if (mShapesPlotted.size() > 200)
+                if (mShapesPlotted.size() > 250)
                 {
                     Log.d("Draw", "Too many shapes in visible region, stopping drawing");
+                    break; // for
                 }
             }
         }
         Log.d("Draw", "StrengthGrid " + mShapesPlotted.size() +
-                      " entries at scale index " + iScale +
-                      " at zoom level " + googleMap.getCameraPosition().zoom);
+                " entries at scale index " + iScale +
+                " at zoom level " + zoom);
     }
 
     public DataFilterByLatLng()
