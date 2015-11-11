@@ -13,12 +13,13 @@ import com.google.android.gms.maps.model.PolygonOptions;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Created by wyatt_000 on 11/8/2015.
+ * Created by wyatt on 11/8/2015.   This file implements a multi-scale 2D data grid, and hex output display
  */
 public class DataFilterByLatLng implements Serializable {
 
@@ -58,10 +59,29 @@ public class DataFilterByLatLng implements Serializable {
                                lonGridAsDouble()));
         }
 
+        /*
         public long hashForIndexing()
         {
             return ((long)(iLatGrid)) << 32 + iLonGrid;
         }
+        */
+
+        // override
+        @Override
+        public boolean equals(Object that)
+        {
+            return ((this.dGridScale == ((LatLonGridPoint)that).dGridScale) &&
+                    (this.iLatGrid   == ((LatLonGridPoint)that).iLatGrid) &&
+                    (this.iLonGrid   == ((LatLonGridPoint)that).iLonGrid));
+        }
+
+        @Override
+        public int hashCode()
+        {
+            return ((142567 * iLatGrid) + iLonGrid);
+        }
+
+
 
         // hexagon
         public List<LatLng> getLatLngPoly()
@@ -132,12 +152,17 @@ public class DataFilterByLatLng implements Serializable {
         }
     }
 
-    transient private LinkedList<Polygon> mShapesPlotted;
+    private class ShapeDrawnInfo
+    {
+        public Polygon polygon;
+        public LatLonGridPoint latLonGridPoint;
+    }
+    transient private HashSet<ShapeDrawnInfo> mShapesPlotted;
 
-    final int[] aiScales = { 18, 19, 20, 21, 22 };
-    final int iNumScales = 5;
+    final int[] aiScales = { 16, 17, 18, 19, 20, 21, 22 };
+    final int iNumScales = 7;
 
-    private List<Map<Long, DataPoint>> mListMapSignalData;
+    private List<Map<LatLonGridPoint, DataPoint>> mListMapSignalData;
 
     public boolean AddData(Location location, int iValue)
     {
@@ -146,7 +171,7 @@ public class DataFilterByLatLng implements Serializable {
         for (int iScale = 0; iScale < iNumScales; iScale++)
         {
             int iGridScale = aiScales[iScale];
-            Map<Long, DataPoint> mMapSignalData = mListMapSignalData.get(iScale);
+            Map<LatLonGridPoint, DataPoint> mMapSignalData = mListMapSignalData.get(iScale);
 
             final double dApproxGridSize = 6000000 * 6.28 / (1 << iGridScale);
 
@@ -166,11 +191,11 @@ public class DataFilterByLatLng implements Serializable {
             boolDataAdded = true;
 
             LatLonGridPoint indexGrid = new LatLonGridPoint(location, iGridScale);
-            Long index = indexGrid.hashForIndexing();
+            //Long index = indexGrid.hashForIndexing();
 
-            if (mMapSignalData.containsKey(index))
+            if (mMapSignalData.containsKey(indexGrid))
             {
-                mMapSignalData.get(index).addData(iWeight, iValue);
+                mMapSignalData.get(indexGrid).addData(iWeight, iValue);
                 /*
                 Log.d("Grid", "Updating Point w/value " + iValue + " total weight " +
                 mMapSignalData.get(index).mNumSamples);
@@ -181,14 +206,53 @@ public class DataFilterByLatLng implements Serializable {
                 DataPoint dataPoint = new DataPoint(location, iGridScale);
                 dataPoint.addData(iWeight, iValue);
 
-                mMapSignalData.put(index, dataPoint);
+                mMapSignalData.put(indexGrid, dataPoint);
                 Log.d("Grid", "New Point w/value " + iValue + " at grid loc " +
-                        indexGrid.iLatGrid + ", " + indexGrid.iLonGrid + " hashcode: " + index );
+                        indexGrid.iLatGrid + ", " + indexGrid.iLonGrid + " hashcode: " + indexGrid );
             }
         }
         return boolDataAdded;
     }
 
+    // only update the shape at this location
+
+    // todo see if i can finish this when more awake
+    public void drawShapes(GoogleMap googleMap, Location location)
+    {
+        // only draw if visible
+        if (googleMap.getProjection().getVisibleRegion().latLngBounds.contains(
+                new LatLng(location.getLatitude(), location.getLongitude())))
+        {
+            List<ShapeDrawnInfo> listShapesToRemove = new LinkedList<>();
+            int iScale = getScaleForCurrentCameraPosition(googleMap);
+
+            Map<LatLonGridPoint, DataPoint> mMapSignalData =
+                    mListMapSignalData.get(getScaleForCurrentCameraPosition(googleMap));
+
+            /*
+            listShapesToRemove.add();
+            aiScales[iScale];
+            */
+
+        }
+
+
+    }
+
+    private int getScaleForCurrentCameraPosition(GoogleMap googleMap)
+    {
+        // select which scale to draw from  zoom 18 or smaller -> 22, 17 -> 21, etc.
+        int iScale = 0;
+        float zoom = googleMap.getCameraPosition().zoom;
+        while ((iScale < iNumScales - 1) &&
+                (aiScales[iScale] - zoom < 3)) // while not enough will show, zoom in
+        {
+            iScale++;
+        }
+        return iScale;
+    }
+
+    // update all the shapes that need it, on a restart, pan or zoom
     public void drawShapes(GoogleMap googleMap)
     {
         // start
@@ -198,53 +262,83 @@ public class DataFilterByLatLng implements Serializable {
 
         // recreate list post deserialization
         if (mShapesPlotted == null) {
-            mShapesPlotted = new LinkedList<>();
+            mShapesPlotted = new HashSet<>();
         }
-        // remove them all
-        while (mShapesPlotted.size() > 0) {
-            mShapesPlotted.remove().remove();
-        }
+
+        int iScale = getScaleForCurrentCameraPosition(googleMap);
+        Map<LatLonGridPoint, DataPoint> mMapSignalData =
+          mListMapSignalData.get(iScale);
+
+
+        HashSet<LatLonGridPoint> latLonGridPointSetAdd = new HashSet<>();
+        List<ShapeDrawnInfo> listShapesToRemove = new LinkedList<>();
+
+        decideShapesToKeepAndNewShapes(latLngBounds, mMapSignalData, mShapesPlotted,
+                                       listShapesToRemove, latLonGridPointSetAdd);
 
         // and redraw them all - very inefficient...
         // todo: only remove & add those that changed?
-        // todo: remove lines on shape edge - and later add back a line at a significant change in sig strength?
         // todo: only draw first 300? - check if ok
-        // todo: test & make work: different scales
 
-        // select which scale to draw from  zoom 18 or smaller -> 22, 17 -> 21, etc.
-        int iScale = 0;
-        float zoom = googleMap.getCameraPosition().zoom;
-        while ((iScale < iNumScales - 1) &&
-               (aiScales[iScale] - zoom < 3)) // while not enough will show, zoom in
-        {
-            iScale++;
-        }
+        Log.d("Draw", "StrengthGrid: removing " + listShapesToRemove.size() +
+                " and adding " + latLonGridPointSetAdd.size() +
+                " entries at scale index " + iScale);
 
-        Map<Long, DataPoint> mMapSignalData = mListMapSignalData.get(iScale);
-
-        for (Map.Entry<Long, DataPoint> entry : mMapSignalData.entrySet())
-        {
-            int iGreenLevel = entry.getValue().getAve();
-            LatLng latLng = entry.getValue().getLatLng();
-
-            if (latLngBounds.contains(latLng))
+        for (ShapeDrawnInfo shapeDrawnInfo : listShapesToRemove) {
+            shapeDrawnInfo.polygon.remove();
+            if (!mShapesPlotted.remove(shapeDrawnInfo))
             {
-                mShapesPlotted.add(
-                        googleMap.addPolygon(new PolygonOptions()
-                                .strokeWidth(0)
-                                .strokeColor(Color.GRAY)
-                                .addAll(entry.getValue().getLatLngPoly())
-                                .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
-                if (mShapesPlotted.size() > 250)
-                {
-                    Log.d("Draw", "Too many shapes in visible region, stopping drawing");
-                    break; // for
-                }
+                Log.e("Draw", "deleted a shape that didn't appear to be in the set of known shapes");
             }
         }
-        Log.d("Draw", "StrengthGrid " + mShapesPlotted.size() +
-                " entries at scale index " + iScale +
-                " at zoom level " + zoom);
+
+        for (LatLonGridPoint latLonGridPoint : latLonGridPointSetAdd)
+        {
+            final DataPoint dataPoint = mMapSignalData.get(latLonGridPoint);
+            final int iGreenLevel = dataPoint.getAve();
+
+            ShapeDrawnInfo shapeDrawnInfo = new ShapeDrawnInfo();
+            shapeDrawnInfo.polygon = googleMap.addPolygon(new PolygonOptions()
+                    .strokeWidth(0)
+                    .strokeColor(Color.GRAY)
+                    .addAll(dataPoint.getLatLngPoly())
+                    .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0)));
+            shapeDrawnInfo.latLonGridPoint = latLonGridPoint;
+            mShapesPlotted.add(shapeDrawnInfo);
+
+            if (mShapesPlotted.size() > 350)
+            {
+                Log.d("Draw", "Too many shapes in visible region, stopping drawing");
+                break; // for
+            }
+        }
+    }
+
+    private void decideShapesToKeepAndNewShapes(LatLngBounds latLngBounds,
+                                                Map<LatLonGridPoint, DataPoint> mMapSignalData,
+                                                HashSet<ShapeDrawnInfo> setShapesPlotted,
+                                                List<ShapeDrawnInfo> listShapesToRemove,
+                                                HashSet<LatLonGridPoint> latLonGridPointSetAdd)
+    {
+        // first make list of all points to add
+        for (Map.Entry<LatLonGridPoint, DataPoint> entry : mMapSignalData.entrySet()) {
+            if (latLngBounds.contains(entry.getValue().getLatLng())) {
+                // want to be on new screen - decide keep, or add
+                latLonGridPointSetAdd.add(entry.getKey());
+            }
+        }
+
+        // then check for matches, deleting those from those that need to be added & adding to remove list
+        for (ShapeDrawnInfo shapeDrawnInfo : setShapesPlotted)
+        {
+            if (!latLonGridPointSetAdd.remove(shapeDrawnInfo.latLonGridPoint))
+            {
+                listShapesToRemove.add(shapeDrawnInfo);
+            }
+        }
+
+
+        // todo - also redraw the data-changed cells, on data change
     }
 
     public DataFilterByLatLng()
@@ -252,8 +346,8 @@ public class DataFilterByLatLng implements Serializable {
         mListMapSignalData = new ArrayList<>();
         for (int i = 0; i < iNumScales; i++)
         {
-            mListMapSignalData.add(new HashMap<Long, DataPoint>());
+            mListMapSignalData.add(new HashMap<LatLonGridPoint, DataPoint>());
         }
-        mShapesPlotted = new LinkedList<>();
+        mShapesPlotted = new HashSet<>();
     }
 }

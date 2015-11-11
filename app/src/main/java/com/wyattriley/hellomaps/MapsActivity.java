@@ -56,7 +56,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private LatLng mCurrentTarget; // for redraw on pan
 
     final int MAX_RECENT_CIRCLES = 2;
-    final String FILENAME = "saved_data_map";
+    final String FILENAME = "saved_data_map2";
 
     @Override
     protected void onCreate(Bundle savedInstanceState)
@@ -188,7 +188,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         if (mSignalData.AddData(location, iGreenLevel))
         {
             // some data was added
-            mSignalData.drawShapes(mMap);
+            mSignalData.drawShapes(mMap); //(mMap, location); todo finish this to update better
 
             mCircleQRecentSignal.add(
                     mMap.addCircle(new CircleOptions()
@@ -284,7 +284,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         {
             LocationServices.FusedLocationApi.removeLocationUpdates(
                     mGoogleApiClient, this);
-        }
+        } // todo - why am I still getting onLocationChanged updates with screen blank?  check lifecycle
 
         try
         {
