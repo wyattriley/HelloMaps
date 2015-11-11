@@ -46,7 +46,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     // good enough accuracy (should use ~15, higher for test) - and/or spread across small bins
     private GoogleMap mMap;
     private GoogleApiClient mGoogleApiClient;
-    private LocationRequest mLocationRequest;
     private TelephonyManager mTelephonyManager;
     private Queue<Circle> mCircleQRecent;
     private Queue<Circle> mCircleQRecentSignal;
@@ -70,7 +69,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 .findFragmentById(R.id.map);
         mapFragment.getMapAsync(this);
 
-        createLocationRequest();
         mGoogleApiClient = new GoogleApiClient.Builder(this)
                 .addConnectionCallbacks(this)
                 .addOnConnectionFailedListener(this)
@@ -164,14 +162,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mSignalData.drawShapes(mMap);// refresh after screen orientation change
     }
 
-    protected void createLocationRequest() {
-        mLocationRequest = new LocationRequest()
-                .setInterval(1000)
-                .setFastestInterval(1000)
-                .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
-    }
-
-    public void onLocationChanged(Location location) {
+     public void onLocationChanged(Location location) {
         Log.d("on", "onLocationChanged");
 
         if (mMap == null) // not ready yet
@@ -188,7 +179,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         if (mSignalData.AddData(location, iGreenLevel))
         {
             // some data was added
-            mSignalData.drawShapes(mMap); //(mMap, location); todo finish this to update better
+            mSignalData.drawShapes(mMap, location); // todo test this
 
             mCircleQRecentSignal.add(
                     mMap.addCircle(new CircleOptions()
@@ -205,20 +196,78 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
     }
 
-    protected void updateRecentCircles(Location location)
-    {
-        LatLng myLatLng = new LatLng(location.getLatitude(), location.getLongitude());
+    @Override
+    public void onStart() {
+        super.onStart();
+        Log.d("on", "onStart fired ..............");
+        mGoogleApiClient.connect();
+    }
 
-        mCircleQRecent.add(
-                mMap.addCircle(new CircleOptions()
-                        .strokeWidth(1)
-                        .center(myLatLng)
-                        .radius(location.getAccuracy())));
+    @Override
+    public void onResume(){
+        super.onResume();
+        Log.d("on", "onResume fired......");
+        startLocationUpdates(mGoogleApiClient);
+    }
 
-        if (mCircleQRecent.size() > MAX_RECENT_CIRCLES)
+    public void onPause() {
+        super.onPause();
+        Log.d("on", "onPause fired ..............");
+
+        if (mGoogleApiClient.isConnected())
         {
-            mCircleQRecent.remove().remove(); // remove from list, then from map
+            LocationServices.FusedLocationApi.removeLocationUpdates(
+                    mGoogleApiClient, this);
+        } // todo - why am I still getting onLocationChanged updates with screen blank?  check lifecycle - as of 11/11 this seems to ahve gone away - check...
+
+        try
+        {
+            FileOutputStream fos = openFileOutput(FILENAME, Context.MODE_PRIVATE);
+            ObjectOutputStream oos = new ObjectOutputStream(fos);
+            oos.writeObject(mSignalData);
+            oos.close();
         }
+        catch (java.io.IOException e)
+        {
+            Log.w("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
+        }
+    }
+
+    @Override
+    public void onConnected(Bundle bundle)
+    {
+        Log.d("on", "onConnected (GoogleApiClient) - isConnected ...............: " + mGoogleApiClient.isConnected());
+        startLocationUpdates(mGoogleApiClient);
+    }
+
+    @Override
+    public void onConnectionSuspended(int i) {
+        Log.d("on", "onConnectedSuspended (GoogleApiClient) - isConnected ...............: " + mGoogleApiClient.isConnected());
+
+
+    }
+
+    @Override
+    public void onConnectionFailed(ConnectionResult connectionResult) {
+
+    }
+
+    private void startLocationUpdates(GoogleApiClient googleApiClient)
+    {
+        if ((googleApiClient == null) ||
+            (!googleApiClient.isConnected()))
+        {
+            // sometimes this is called on startup, so only connect if ready
+            // this is also called at OnConnected, so will kick things off then
+            return;
+        }
+        LocationRequest locationRequest = new LocationRequest()
+                .setInterval(1000)
+                .setFastestInterval(1000)
+                .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+
+        LocationServices.FusedLocationApi.requestLocationUpdates(
+                googleApiClient, locationRequest, this);
     }
 
     protected int getLteSignalAsGreenLevel()
@@ -245,7 +294,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 if (iDbm < 100)
                 {
                     Log.w("Signal", "Unexpectedly strong LTE getDbm signal (low) value: " + iDbm +
-                                    " vs. range of ~800-1200 typically expected");
+                            " vs. range of ~800-1200 typically expected");
                 }
                 else if (iDbm < minDbmReported)
                 {
@@ -269,53 +318,19 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         return iGreenLevel;
     }
 
-    @Override
-    public void onStart() {
-        super.onStart();
-        Log.d("on", "onStart fired ..............");
-        mGoogleApiClient.connect();
-    }
-
-    public void onPause() {
-        super.onPause();
-        Log.d("on", "onPause fired ..............");
-
-        if (mGoogleApiClient.isConnected())
-        {
-            LocationServices.FusedLocationApi.removeLocationUpdates(
-                    mGoogleApiClient, this);
-        } // todo - why am I still getting onLocationChanged updates with screen blank?  check lifecycle
-
-        try
-        {
-            FileOutputStream fos = openFileOutput(FILENAME, Context.MODE_PRIVATE);
-            ObjectOutputStream oos = new ObjectOutputStream(fos);
-            oos.writeObject(mSignalData);
-            oos.close();
-        }
-        catch (java.io.IOException e)
-        {
-            Log.w("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
-        }
-    }
-
-    @Override
-    public void onConnected(Bundle bundle)
+    protected void updateRecentCircles(Location location)
     {
-        Log.d("on", "onConnected (GoogleApiClient) - isConnected ...............: " + mGoogleApiClient.isConnected());
-        LocationServices.FusedLocationApi.requestLocationUpdates(
-                mGoogleApiClient, mLocationRequest, this);
-    }
+        LatLng myLatLng = new LatLng(location.getLatitude(), location.getLongitude());
 
-    @Override
-    public void onConnectionSuspended(int i) {
-        Log.d("on", "onConnectedSuspended (GoogleApiClient) - isConnected ...............: " + mGoogleApiClient.isConnected());
+        mCircleQRecent.add(
+                mMap.addCircle(new CircleOptions()
+                        .strokeWidth(1)
+                        .center(myLatLng)
+                        .radius(location.getAccuracy())));
 
-
-    }
-
-    @Override
-    public void onConnectionFailed(ConnectionResult connectionResult) {
-
+        if (mCircleQRecent.size() > MAX_RECENT_CIRCLES)
+        {
+            mCircleQRecent.remove().remove(); // remove from list, then from map
+        }
     }
 }
