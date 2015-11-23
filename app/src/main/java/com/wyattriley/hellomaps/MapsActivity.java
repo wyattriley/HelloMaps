@@ -2,9 +2,11 @@ package com.wyattriley.hellomaps;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.location.LocationManager;
+import android.os.AsyncTask;
 import android.support.v4.app.FragmentActivity;
 import android.os.Bundle;
 
@@ -49,13 +51,47 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private TelephonyManager mTelephonyManager;
     private Queue<Circle> mCircleQRecent;
     private Queue<Circle> mCircleQRecentSignal;
+    private boolean mMapTrackCurrentLocation;
+    private boolean mMapTrackCurrentLocationJustSet;
 
-    private DataFilterByLatLng mSignalData;
+    private DataFilterByLatLng mSignalData; // todo - test putting this outside the activity, so it persists on screen rotation
     private float mCurrentZoom; // for redraw on zoom
     private LatLng mCurrentTarget; // for redraw on pan
 
     final int MAX_RECENT_CIRCLES = 2;
-    final String FILENAME = "saved_data_map2";
+    final String FILENAME = "saved_data_map";
+    final int DEFAULT_ZOOM = 19;
+    final String PREFS_MAP = "prefs_map";
+
+    private class OpenFileTask extends AsyncTask<Void, Void, DataFilterByLatLng>
+    {
+        protected DataFilterByLatLng doInBackground(Void... v)
+        {
+            DataFilterByLatLng d = new DataFilterByLatLng();
+            try
+            {
+                FileInputStream fis = openFileInput(FILENAME);
+                ObjectInputStream ois = new ObjectInputStream(fis);
+                d = (DataFilterByLatLng) ois.readObject();
+                ois.close();
+            }
+            catch (java.io.IOException | ClassNotFoundException e)
+            {
+                Log.d("File", "Couldn't read data from " + FILENAME + " " + e.getMessage());
+            }
+
+            return d;
+        }
+
+        protected void onPostExecute(DataFilterByLatLng dataFilterByLatLng)
+        {
+            mSignalData = dataFilterByLatLng;
+            if (!mSignalData.initShapesPlottedIfNeeded())
+            {
+                Log.w("InitShapes", "Unexpectedly didn't need to init shapes after file read.");
+            }
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState)
@@ -79,17 +115,19 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mCircleQRecent = new LinkedList<>();
         mCircleQRecentSignal = new LinkedList<>();
         mSignalData = new DataFilterByLatLng();
+        new OpenFileTask().execute(); // load mSignalData, in other thread, to avoid delay
 
-        try
+        mMapTrackCurrentLocation = false;
+        mMapTrackCurrentLocationJustSet = false;
+
+        // Load settings
+        SharedPreferences settings = getSharedPreferences(PREFS_MAP, 0);
+        mCurrentZoom = settings.getFloat("currentZoom", DEFAULT_ZOOM);
+        LatLng latLng = new LatLng(settings.getFloat("currentTargetLat", 0.0F),
+                settings.getFloat("currentTargetLng", 0.0F));
+        if (latLng.latitude != 0.0F) // has useful data
         {
-            FileInputStream fis = openFileInput(FILENAME);
-            ObjectInputStream ois = new ObjectInputStream(fis);
-            mSignalData = (DataFilterByLatLng) ois.readObject();
-            ois.close();
-        }
-        catch (java.io.IOException | ClassNotFoundException e)
-        {
-            Log.d("File", "Couldn't read data from " + FILENAME + " " + e.getMessage());
+            mCurrentTarget = latLng;
         }
     }
 
@@ -124,24 +162,39 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         //  move the camera and zoom to initial location
         LatLng myLatLng = new LatLng(oldLocation.getLatitude(), oldLocation.getLongitude());
-        if ((mCurrentZoom != 0.0) &&
-            (mCurrentTarget != null)) // todo: context-save these values so this actually works
+        if (mCurrentZoom != 0.0)
         {
-            mMap.moveCamera(CameraUpdateFactory.newLatLng(mCurrentTarget));
             mMap.moveCamera(CameraUpdateFactory.zoomTo(mCurrentZoom));
         }
-        else {
+        else
+        {
+            mMap.moveCamera(CameraUpdateFactory.zoomTo(DEFAULT_ZOOM));
+        }
+        if (mCurrentTarget != null) // todo: context-save these values so this actually works
+        {
+            mMap.moveCamera(CameraUpdateFactory.newLatLng(mCurrentTarget));
+        }
+        else
+        {
             mMap.moveCamera(CameraUpdateFactory.newLatLng(myLatLng));
-            mMap.moveCamera(CameraUpdateFactory.zoomTo(19));
         }
 
         mMap.setOnCameraChangeListener(new GoogleMap.OnCameraChangeListener() {
             @Override
             public void onCameraChange(CameraPosition cameraPosition)
             {
+                // check if changed, and if so, save to check next time & redraw
                 if ((cameraPosition.zoom != mCurrentZoom)||
-                    (cameraPosition.target != mCurrentTarget))
-                {
+                    (cameraPosition.target != mCurrentTarget)) {
+                    // turn off tracking mode
+                    if (mMapTrackCurrentLocationJustSet) {
+                        mMapTrackCurrentLocationJustSet = false;
+                    }
+                    else {
+                        mMapTrackCurrentLocation = false; // todo - fix this, because this turns off in response to the original move
+                        Log.d("Track", "off");
+                    }
+
                     mCurrentZoom = cameraPosition.zoom;
                     mCurrentTarget = cameraPosition.target;
                     mSignalData.drawShapes(mMap);
@@ -158,6 +211,18 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mMap.addCircle(new CircleOptions()
                 .center(myLatLng)
                 .radius(oldLocation.getAccuracy()));*/
+
+        mMap.setOnMyLocationButtonClickListener(new GoogleMap.OnMyLocationButtonClickListener(){
+            @Override
+            public boolean onMyLocationButtonClick()
+            {
+                // turn on tracking mode
+                mMapTrackCurrentLocation = true;
+                mMapTrackCurrentLocationJustSet = true;
+                Log.d("Track", "on");
+                return false;
+            }
+        });
 
         mSignalData.drawShapes(mMap);// refresh after screen orientation change
     }
@@ -179,7 +244,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         if (mSignalData.AddData(location, iGreenLevel))
         {
             // some data was added
-            mSignalData.drawShapes(mMap, location); // todo test this
+            mSignalData.drawShapes(mMap, location);
 
             mCircleQRecentSignal.add(
                     mMap.addCircle(new CircleOptions()
@@ -187,13 +252,17 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                             .strokeColor(Color.GRAY)
                             .center(myLatLng)
                             .radius(location.getAccuracy())
-                            .fillColor(Color.argb(64, 255 - iGreenLevel, iGreenLevel, 0))));
+                            .fillColor(DataFilterByLatLng.colorFromGreenLevel(iGreenLevel))));
 
             if (mCircleQRecentSignal.size() > MAX_RECENT_CIRCLES)
             {
                 mCircleQRecentSignal.remove().remove();
             }
         }
+         if (mMapTrackCurrentLocation)
+         {
+             mMap.moveCamera(CameraUpdateFactory.newLatLng(myLatLng));
+         }
     }
 
     @Override
@@ -218,8 +287,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         {
             LocationServices.FusedLocationApi.removeLocationUpdates(
                     mGoogleApiClient, this);
-        } // todo - why am I still getting onLocationChanged updates with screen blank?  check lifecycle - as of 11/11 this seems to ahve gone away - check...
+        }
 
+        // Todo: figure out how to do this in a different thread - like the read, but avoiding a collision with the read...
         try
         {
             FileOutputStream fos = openFileOutput(FILENAME, Context.MODE_PRIVATE);
@@ -231,6 +301,21 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         {
             Log.w("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
         }
+    }
+
+    protected void onStop()
+    {
+        super.onStop();
+
+        // Save settings
+        SharedPreferences settings = getSharedPreferences(PREFS_MAP, 0);
+        SharedPreferences.Editor editor = settings.edit();
+        editor.putFloat("currentZoom", mCurrentZoom);
+        if (mCurrentTarget != null) {
+            editor.putFloat("currentTargetLat", (float) mCurrentTarget.latitude);
+            editor.putFloat("currentTargetLng", (float) mCurrentTarget.longitude);
+        }
+        editor.apply();
     }
 
     @Override
@@ -263,7 +348,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
         LocationRequest locationRequest = new LocationRequest()
                 .setInterval(1000)
-                .setFastestInterval(1000)
+                .setFastestInterval(500)
                 .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
 
         LocationServices.FusedLocationApi.requestLocationUpdates(

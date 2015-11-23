@@ -1,10 +1,17 @@
 package com.wyattriley.hellomaps;
 
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.location.Location;
 import android.util.Log;
 
 import com.google.android.gms.maps.GoogleMap;
+import com.google.android.gms.maps.model.BitmapDescriptor;
+import com.google.android.gms.maps.model.GroundOverlay;
+import com.google.android.gms.maps.model.GroundOverlayOptions;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.LatLngBounds;
 import com.google.android.gms.maps.model.Polygon;
@@ -17,6 +24,7 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 
 /**
  * Created by wyatt on 11/8/2015.   This file implements a multi-scale 2D data grid, and hex output display
@@ -32,9 +40,9 @@ public class DataFilterByLatLng implements Serializable {
         private int iLonGrid;
 
         // same exponent as gmaps for size of screen, but for size of one grid cell
-        public LatLonGridPoint(Location location, int iScaleExponent)
+        public LatLonGridPoint(Location location, int iGridScaleExponent)
         {
-            final int iScaleWorldMult = 1 << iScaleExponent;
+            final int iScaleWorldMult = 1 << iGridScaleExponent;
             dGridScale = iScaleWorldMult / 360.0;
 
             // 0.5 * is to stagger these every other column, so they make a hex pattern
@@ -59,13 +67,6 @@ public class DataFilterByLatLng implements Serializable {
                                lonGridAsDouble()));
         }
 
-        /*
-        public long hashForIndexing()
-        {
-            return ((long)(iLatGrid)) << 32 + iLonGrid;
-        }
-        */
-
         // override
         @Override
         public boolean equals(Object that)
@@ -79,6 +80,10 @@ public class DataFilterByLatLng implements Serializable {
         @Override
         public int hashCode()
         {
+            /* semi-random prime # roughly halfway through the int's
+               so as to pull slightly differ lat's far apart and let a bunch of
+               similar Lon's fit neatly between
+             */
             return ((142567 * iLatGrid) + iLonGrid);
         }
 
@@ -155,13 +160,15 @@ public class DataFilterByLatLng implements Serializable {
 
     private class ShapeDrawnInfo
     {
-        public Polygon polygon;
-        public LatLonGridPoint latLonGridPoint;
+        public Polygon mPolygon;
+        public LatLonGridPoint mLatLonGridPoint;
     }
     transient private HashSet<ShapeDrawnInfo> mShapesPlotted;
 
-    final int[] aiScales = { 16, 17, 18, 19, 20, 21, 22 };
-    final int iNumScales = 7;
+    final int MAX_SHAPES_TO_PLOT = 300;
+
+    final int[] maiGridScales = { 9, 12, 14, 16, 17, 18, 19, 20, 21, 22 };
+    final int NUM_GRID_SCALES = 10;
 
     private List<Map<LatLonGridPoint, DataPoint>> mListMapSignalData;
 
@@ -169,9 +176,9 @@ public class DataFilterByLatLng implements Serializable {
     {
         boolean boolDataAdded = false;
 
-        for (int iScale = 0; iScale < iNumScales; iScale++)
+        for (int iScale = 0; iScale < NUM_GRID_SCALES; iScale++)
         {
-            int iGridScale = aiScales[iScale];
+            int iGridScale = maiGridScales[iScale];
             Map<LatLonGridPoint, DataPoint> mMapSignalData = mListMapSignalData.get(iScale);
 
             final double dApproxGridSize = 6000000 * 6.28 / (1 << iGridScale);
@@ -215,38 +222,62 @@ public class DataFilterByLatLng implements Serializable {
         return boolDataAdded;
     }
 
+    public boolean initShapesPlottedIfNeeded()
+    {
+        if (mShapesPlotted == null)
+        {
+            mShapesPlotted = new HashSet<>();
+            return true;
+        }
+        return false;
+    }
+
     // only update the shape at this location
     public void drawShapes(GoogleMap googleMap, Location location)
     {
+        // todo: write all warnings to a log that's visible in the menu
+
+        // todo: have the live circles on by default, be menu selectable off
+
+        // todo-test: have track me stick when clicking the center-on-me, and un-stick on pan
+
+        // this should be done at deserializaiton - warn if not
+        if (initShapesPlottedIfNeeded())
+        {
+            Log.w("ShapesInit", "Was Null, needed re-init, in drawShapes (location)");
+        }
+
         // only draw if visible
         if (googleMap.getProjection().getVisibleRegion().latLngBounds.contains(
                 new LatLng(location.getLatitude(), location.getLongitude())))
         {
-            int iScale = getScaleForCurrentCameraPosition(googleMap);
+            int iGridScaleIndex = getScaleForCurrentCameraPosition(googleMap);
 
             // todo improve the names of the various scales index or integer, ai, or not...
-            LatLonGridPoint latLonGridPoint = new LatLonGridPoint(location, aiScales[iScale]);
-            Map<LatLonGridPoint, DataPoint> mMapSignalData =
-                    mListMapSignalData.get(iScale);
+            LatLonGridPoint latLonGridPoint = new LatLonGridPoint(location, maiGridScales[iGridScaleIndex]);
+            Map<LatLonGridPoint, DataPoint> mapSignalData =
+                    mListMapSignalData.get(iGridScaleIndex);
 
-            DataPoint dataPoint = mMapSignalData.get(latLonGridPoint);
+            DataPoint dataPoint = mapSignalData.get(latLonGridPoint);
             if (dataPoint == null)
             {
-                Log.w("draw",
+                Log.d("draw",
                         "couldn't update current point due to dataPoint not found. " +
                                 "latLongGridPoint: " + latLonGridPoint.iLatGrid + " "
                                 + latLonGridPoint.iLonGrid);
                 return;
             }
 
-            final int iGreenLevel = mMapSignalData.get(latLonGridPoint).getAve();
+            final int iGreenLevel = mapSignalData.get(latLonGridPoint).getAve();
             final int color = colorFromGreenLevel(iGreenLevel);
 
+            boolean bFoundAndUpdated = false;
             for(ShapeDrawnInfo shape : mShapesPlotted)
             {
-                if (shape.latLonGridPoint.equals(latLonGridPoint))
+                if (shape.mLatLonGridPoint.equals(latLonGridPoint))
                 {
-                    shape.polygon.setFillColor(color);
+                    shape.mPolygon.setFillColor(color);
+                    bFoundAndUpdated = true;
                     break;
                 }
                 /*
@@ -258,6 +289,20 @@ public class DataFilterByLatLng implements Serializable {
                 }
                 */
             }
+
+            if (!bFoundAndUpdated)
+            {
+                // not found, need to draw it fresh
+                List<ShapeDrawnInfo> listShapesToRemoveNone = new LinkedList<>();
+                HashSet<LatLonGridPoint> latLonGridPointSetOfOneToAdd = new HashSet<>();
+                latLonGridPointSetOfOneToAdd.add(latLonGridPoint);
+
+                drawListedShapes(listShapesToRemoveNone,
+                        latLonGridPointSetOfOneToAdd,
+                        iGridScaleIndex,
+                        mapSignalData,
+                        googleMap);
+            }
         }
     }
 
@@ -268,9 +313,10 @@ public class DataFilterByLatLng implements Serializable {
 
         LatLngBounds latLngBounds = googleMap.getProjection().getVisibleRegion().latLngBounds;
 
-        // recreate list post deserialization
-        if (mShapesPlotted == null) {
-            mShapesPlotted = new HashSet<>();
+        // this should be done at deserializaiton - warn if not
+        if (initShapesPlottedIfNeeded())
+        {
+            Log.w("ShapesInit", "Was Null, needed re-init, in drawShapes (location)");
         }
 
         int iScale = getScaleForCurrentCameraPosition(googleMap);
@@ -290,17 +336,16 @@ public class DataFilterByLatLng implements Serializable {
 
     private void drawListedShapes( List<ShapeDrawnInfo> listShapesToRemove,
                                    HashSet<LatLonGridPoint> latLonGridPointSetAdd,
-                                   int iScale,
+                                   int iGridScaleIndex,
                                    Map<LatLonGridPoint, DataPoint> mMapSignalData,
-                                   GoogleMap googleMap) // todo set consts
-
+                                   GoogleMap googleMap)
     {
         Log.d("Draw", "StrengthGrid: removing " + listShapesToRemove.size() +
                 " and adding " + latLonGridPointSetAdd.size() +
-                " entries at scale index " + iScale);
+                " entries at scale index " + iGridScaleIndex);
 
         for (ShapeDrawnInfo shapeDrawnInfo : listShapesToRemove) {
-            shapeDrawnInfo.polygon.remove();
+            shapeDrawnInfo.mPolygon.remove();
             if (!mShapesPlotted.remove(shapeDrawnInfo))
             {
                 Log.e("Draw", "deleted a shape that didn't appear to be in the set of known shapes");
@@ -313,29 +358,50 @@ public class DataFilterByLatLng implements Serializable {
             final int iGreenLevel = dataPoint.getAve();
 
             ShapeDrawnInfo shapeDrawnInfo = new ShapeDrawnInfo();
-            shapeDrawnInfo.polygon = googleMap.addPolygon(new PolygonOptions()
+            shapeDrawnInfo.mPolygon = googleMap.addPolygon(new PolygonOptions()
                     .strokeWidth(0)
                     .strokeColor(Color.GRAY)
                     .addAll(dataPoint.getLatLngPoly())
                     .fillColor(colorFromGreenLevel(iGreenLevel)));
-            shapeDrawnInfo.latLonGridPoint = latLonGridPoint;
+            shapeDrawnInfo.mLatLonGridPoint = latLonGridPoint;
             mShapesPlotted.add(shapeDrawnInfo);
 
-            if (mShapesPlotted.size() > 350)
+            if (mShapesPlotted.size() > MAX_SHAPES_TO_PLOT)
             {
                 Log.d("Draw", "Too many shapes in visible region, stopping drawing");
                 break; // for
             }
         }
+
+        /* todo - complete & then iterate on multiple levels of zoom, no-transparency, the following to draw to a canvas/bitmap, then put the bitmap on the mMap
+           todo - start with just a simple drawing, of the hexes at one level of zoom - trying to repro existing behavior, then draw two layers, then draw
+                  multiple layers, including returning refined versions, from another thread to avoid slowing things down...  and finally, update with a
+                  draw efficiency thing that simply updates the bitmap...
+        Bitmap b = Bitmap.createBitmap(2048, 2048, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(b);
+        Paint paint = new Paint();
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(colorFromGreenLevel(iGreenLevel));
+        Path path = new Path(); // todo draw the path
+        canvas.drawPath(path, paint);
+
+        BitmapDescriptor image = new BitmapDescriptor();
+        LatLngBounds latLngBounds = new LatLngBounds();
+
+        GroundOverlay groundOverlay = googleMap.addGroundOverlay(new GroundOverlayOptions()
+                .image(image)
+                .positionFromBounds(latLngBounds)
+                .transparency(0.5f));
+        */
     }
 
-    private int getScaleForCurrentCameraPosition(GoogleMap googleMap) // todo reuse below?  move func far below
+    private int getScaleForCurrentCameraPosition(GoogleMap googleMap)
     {
         // select which scale to draw from  zoom 18 or smaller -> 22, 17 -> 21, etc.
         int iScale = 0;
         float zoom = googleMap.getCameraPosition().zoom;
-        while ((iScale < iNumScales - 1) &&
-                (aiScales[iScale] - zoom < 3)) // while not enough will show, zoom in
+        while ((iScale < NUM_GRID_SCALES - 1) &&
+                (maiGridScales[iScale] - zoom < 3)) // while not enough will show, zoom in
         {
             iScale++;
         }
@@ -348,21 +414,45 @@ public class DataFilterByLatLng implements Serializable {
                                                 List<ShapeDrawnInfo> listShapesToRemove,
                                                 HashSet<LatLonGridPoint> latLonGridPointSetAdd)
     {
+        // create optional bigger bounds in which to put things
+        final int iBoundsScale = 2;
+        Queue<LatLonGridPoint> latLonGridPointListAddIfSpace = new LinkedList<>();
+        LatLngBounds latLngBoundsLarge = latLngBounds;
+        // max to avoid rollover at worlds edge
+        double latRange = Math.max(latLngBounds.northeast.latitude - latLngBounds.southwest.latitude, 0.0);
+        double lonRange = Math.max(latLngBounds.northeast.longitude - latLngBounds.southwest.longitude, 0.0);
+        LatLng latLngDoubleNe = new LatLng(latLngBounds.northeast.latitude + latRange/2.0 * (iBoundsScale-1),
+                                           latLngBounds.northeast.longitude + lonRange/2.0 * (iBoundsScale-1));
+        LatLng latLngDoubleSw = new LatLng(latLngBounds.southwest.latitude - latRange/2.0 * (iBoundsScale-1),
+                                           latLngBounds.southwest.longitude - lonRange/2.0 * (iBoundsScale-1));
+
+        latLngBoundsLarge = latLngBoundsLarge.including(latLngDoubleNe);
+        latLngBoundsLarge = latLngBoundsLarge.including(latLngDoubleSw);
+
         // first make list of all points to add
         for (Map.Entry<LatLonGridPoint, DataPoint> entry : mMapSignalData.entrySet()) {
-            if (latLngBounds.contains(entry.getValue().getLatLng())) {
+            if (latLngBounds.contains(entry.getValue().getLatLng()))
+            {
                 // want to be on new screen - decide keep, or add
                 latLonGridPointSetAdd.add(entry.getKey());
-                // todo count total plotted here, and if not too many, consider drawing more in a 2x expanded bounds for smoother scrolling
-                // todo make max to draw in here, and/or in level above
-                // todo - ooh, maybe double or triple the size, then make a priority queue based on dist^2 to the center, then select in that order up to max?
             }
+            else if (latLngBoundsLarge.contains(entry.getValue().getLatLng()))
+            {
+                // want to be on new screen - decide keep, or add
+                latLonGridPointListAddIfSpace.add(entry.getKey());
+            }
+        }
+        // copy more if space
+        while ((latLonGridPointSetAdd.size() < MAX_SHAPES_TO_PLOT) &&
+                (latLonGridPointListAddIfSpace.size() > 0))
+        {
+            latLonGridPointSetAdd.add(latLonGridPointListAddIfSpace.remove());
         }
 
         // then check for matches, deleting those from those that need to be added & adding to remove list
         for (ShapeDrawnInfo shapeDrawnInfo : setShapesPlotted)
         {
-            if (!latLonGridPointSetAdd.remove(shapeDrawnInfo.latLonGridPoint))
+            if (!latLonGridPointSetAdd.remove(shapeDrawnInfo.mLatLonGridPoint))
             {
                 listShapesToRemove.add(shapeDrawnInfo);
             }
@@ -372,15 +462,30 @@ public class DataFilterByLatLng implements Serializable {
     public DataFilterByLatLng()
     {
         mListMapSignalData = new ArrayList<>();
-        for (int i = 0; i < iNumScales; i++)
+        for (int i = 0; i < NUM_GRID_SCALES; i++)
         {
             mListMapSignalData.add(new HashMap<LatLonGridPoint, DataPoint>());
         }
         mShapesPlotted = new HashSet<>();
     }
 
-    private int colorFromGreenLevel(int iGreenLevel)
+    public static int colorFromGreenLevel(int iGreenLevel)
     {
-        return Color.argb(128, 255 - iGreenLevel, iGreenLevel, 0);
+        // 00FF00 at 255
+        // 808000 at 192
+        // FFFF00 at 128
+        // FF0000 at 0
+        if (iGreenLevel >= 192 &&  iGreenLevel <= 255)
+        {
+            return Color.argb(128, 511 - iGreenLevel * 2, 255 - (255-iGreenLevel)*2, 0);
+        }
+        else if (iGreenLevel >= 128 &&  iGreenLevel < 192)
+        {
+            return Color.argb(128, 511 - iGreenLevel * 2, 255 - (iGreenLevel-128)*2, 0);
+        }
+        else
+        {
+            return Color.argb(128, 255, iGreenLevel * 2, 0);
+        }
     }
 }
