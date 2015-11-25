@@ -1,23 +1,20 @@
 package com.wyattriley.hellomaps;
 
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Path;
 import android.location.Location;
 import android.util.Log;
 
 import com.google.android.gms.maps.GoogleMap;
-import com.google.android.gms.maps.model.BitmapDescriptor;
-import com.google.android.gms.maps.model.GroundOverlay;
-import com.google.android.gms.maps.model.GroundOverlayOptions;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.LatLngBounds;
 import com.google.android.gms.maps.model.Polygon;
 import com.google.android.gms.maps.model.PolygonOptions;
 
-import java.io.Serializable;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -29,26 +26,35 @@ import java.util.Queue;
 /**
  * Created by wyatt on 11/8/2015.   This file implements a multi-scale 2D data grid, and hex output display
  */
-public class DataFilterByLatLng implements Serializable {
+public class DataFilterByLatLng {
 
-    private class LatLonGridPoint implements Serializable
+    private class LatLonGridPoint
     {
-        final int iScaleWorldMultDefault = 1 << 22;
-        private double dGridScale = iScaleWorldMultDefault / 360.0;
+        private double dGridScale = getGridScaleFromExponent(22); // 22 is default scale? not needed...  todo, reconsider & remove
 
         private int iLatGrid;
         private int iLonGrid;
 
-        // same exponent as gmaps for size of screen, but for size of one grid cell
-        public LatLonGridPoint(Location location, int iGridScaleExponent)
+        private double getGridScaleFromExponent(int iGridScaleExponent)
         {
-            final int iScaleWorldMult = 1 << iGridScaleExponent;
-            dGridScale = iScaleWorldMult / 360.0;
+            return (1 << iGridScaleExponent) / 360.0;
+        }
+        // same exponent as gmaps for size of screen, but for size of one grid cell
+        public LatLonGridPoint(Location location, int iGridScaleExp)
+        {
+            dGridScale = getGridScaleFromExponent(iGridScaleExp);
 
             // 0.5 * is to stagger these every other column, so they make a hex pattern
             iLonGrid = (int)Math.round(dGridScale * location.getLongitude());
             iLatGrid = (int)Math.round(dGridScale * location.getLatitude()+
                     0.5 * (iLonGrid % 2));
+        }
+
+        // for on-file-load
+        public LatLonGridPoint(int iLatGridIn, int iLonGridIn, int iGridScaleExp) {
+            dGridScale = getGridScaleFromExponent(iGridScaleExp);
+            iLatGrid = iLatGridIn;
+            iLonGrid = iLonGridIn;
         }
 
         private double latGridAsDouble()
@@ -115,10 +121,17 @@ public class DataFilterByLatLng implements Serializable {
         }
     }
 
-    private class DataPoint implements Serializable {
+    private class DataPoint {
         private int mNumSamples;
-        private long mTotal;
+        private long mTotal; // todo: handle overflow/high numbers (cut in half when large enough)
         private LatLonGridPoint mLatLonGridPoint;
+
+        // for on-file-load
+        public DataPoint(int iNumSamples, long lTotal, LatLonGridPoint latLonGridPoint) {
+            mNumSamples = iNumSamples;
+            mTotal= lTotal;
+            mLatLonGridPoint = latLonGridPoint;
+        }
 
         public LatLng getLatLng()
         {
@@ -167,10 +180,100 @@ public class DataFilterByLatLng implements Serializable {
 
     final int MAX_SHAPES_TO_PLOT = 300;
 
-    final int[] maiGridScales = { 9, 12, 14, 16, 17, 18, 19, 20, 21, 22 };
+    // todo: make each grid it's own class?
+    final int[] maiGridScaleExp = { 9, 12, 14, 16, 17, 18, 19, 20, 21, 22 };
     final int NUM_GRID_SCALES = 10;
 
     private List<Map<LatLonGridPoint, DataPoint>> mListMapSignalData;
+
+    /*
+       File format:
+       - Version, int, 1
+       - Number of Grids, int, [10]
+         - Grid Scale, int, [9,...22]
+         - Num Points (in this grid), int, ?
+            - LatIndex, int
+            - LonIndex, int
+            - NumSamples, int
+            - Total, long
+
+       todo: make file writing it's own class?  and/or in it's own thread, w/thread safety
+     */
+
+    public void writeToFile(FileOutputStream fos)
+    {
+        try {
+            DataOutputStream dos = new DataOutputStream(fos);
+            dos.write(1); //version
+            dos.write(NUM_GRID_SCALES);
+            for(int iScale = 0; iScale < NUM_GRID_SCALES; iScale++)
+            {
+                dos.write(maiGridScaleExp[iScale]);
+                Map<LatLonGridPoint, DataPoint> mapDataPoints = mListMapSignalData.get(iScale);
+                dos.writeInt(mapDataPoints.size());
+                int iCountDataPointsWritten = 0;
+                for (Map.Entry<LatLonGridPoint, DataPoint> entry : mapDataPoints.entrySet())
+                {
+                    dos.writeInt(entry.getKey().iLatGrid);
+                    dos.writeInt(entry.getKey().iLonGrid);
+                    dos.writeInt(entry.getValue().mNumSamples);
+                    dos.writeLong(entry.getValue().mTotal);
+                    iCountDataPointsWritten++;
+                }
+                if (iCountDataPointsWritten != mapDataPoints.size())
+                {
+                    Log.e("File", "Corrupt Write - unexpected count of points written " +
+                                  iCountDataPointsWritten + " vs size written " +
+                                  mapDataPoints.size());
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // read in file - checking version # and grid scales match expectations
+    public void readFromFile(FileInputStream fis)
+    {
+        try {
+            DataInputStream dis = new DataInputStream(fis);
+            int iVersion = dis.read();
+            if (iVersion != 1)
+            {
+                Log.e("File", "Read - Version not handled " + iVersion);
+                return;
+            }
+            int iNumGridScales = dis.read();
+            if (iNumGridScales != NUM_GRID_SCALES)
+            {
+                Log.e("File", "Read - Num grid scales not handled " + iNumGridScales);
+                return;
+            }
+            for(int iScale = 0; iScale < iNumGridScales; iScale++)
+            {
+                int iGridScaleExp = dis.read();
+                if (iGridScaleExp != maiGridScaleExp[iScale])
+                {
+                    Log.e("File", "Read - Grid scales not expected " + iGridScaleExp);
+                    return;
+                }
+                Map<LatLonGridPoint, DataPoint> mapDataPoints = mListMapSignalData.get(iScale);
+                mapDataPoints.clear();
+                int iSize = dis.readInt();
+                for(int iDataPoint = 0; iDataPoint < iSize; iDataPoint++)
+                {
+                    LatLonGridPoint latLonGridPoint =
+                            new LatLonGridPoint(dis.readInt(), dis.readInt(), iGridScaleExp);
+                    DataPoint dataPoint =
+                            new DataPoint(dis.readInt(), dis.readLong(), latLonGridPoint);
+                    mapDataPoints.put(latLonGridPoint, dataPoint);
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
 
     public boolean AddData(Location location, int iValue)
     {
@@ -178,7 +281,7 @@ public class DataFilterByLatLng implements Serializable {
 
         for (int iScale = 0; iScale < NUM_GRID_SCALES; iScale++)
         {
-            int iGridScale = maiGridScales[iScale];
+            int iGridScale = maiGridScaleExp[iScale];
             Map<LatLonGridPoint, DataPoint> mMapSignalData = mListMapSignalData.get(iScale);
 
             final double dApproxGridSize = 6000000 * 6.28 / (1 << iGridScale);
@@ -254,7 +357,7 @@ public class DataFilterByLatLng implements Serializable {
             int iGridScaleIndex = getScaleForCurrentCameraPosition(googleMap);
 
             // todo improve the names of the various scales index or integer, ai, or not...
-            LatLonGridPoint latLonGridPoint = new LatLonGridPoint(location, maiGridScales[iGridScaleIndex]);
+            LatLonGridPoint latLonGridPoint = new LatLonGridPoint(location, maiGridScaleExp[iGridScaleIndex]);
             Map<LatLonGridPoint, DataPoint> mapSignalData =
                     mListMapSignalData.get(iGridScaleIndex);
 
@@ -401,7 +504,7 @@ public class DataFilterByLatLng implements Serializable {
         int iScale = 0;
         float zoom = googleMap.getCameraPosition().zoom;
         while ((iScale < NUM_GRID_SCALES - 1) &&
-                (maiGridScales[iScale] - zoom < 3)) // while not enough will show, zoom in
+                (maiGridScaleExp[iScale] - zoom < 3)) // while not enough will show, zoom in
         {
             iScale++;
         }

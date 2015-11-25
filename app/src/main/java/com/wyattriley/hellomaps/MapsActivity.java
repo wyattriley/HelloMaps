@@ -32,10 +32,9 @@ import android.telephony.CellSignalStrengthLte;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
@@ -55,11 +54,12 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private boolean mMapTrackCurrentLocationJustSet;
 
     private DataFilterByLatLng mSignalData; // todo - test putting this outside the activity, so it persists on screen rotation
+    private boolean mSignalDataLoaded;
     private float mCurrentZoom; // for redraw on zoom
     private LatLng mCurrentTarget; // for redraw on pan
 
     final int MAX_RECENT_CIRCLES = 2;
-    final String FILENAME = "saved_data_map";
+    final String FILENAME = "saved_data_map_1";
     final int DEFAULT_ZOOM = 19;
     final String PREFS_MAP = "prefs_map";
 
@@ -71,11 +71,15 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             try
             {
                 FileInputStream fis = openFileInput(FILENAME);
+                d.readFromFile(fis);
+                fis.close();
+                /*
                 ObjectInputStream ois = new ObjectInputStream(fis);
                 d = (DataFilterByLatLng) ois.readObject();
                 ois.close();
+                */
             }
-            catch (java.io.IOException | ClassNotFoundException e)
+            catch (java.io.IOException e)
             {
                 Log.d("File", "Couldn't read data from " + FILENAME + " " + e.getMessage());
             }
@@ -85,7 +89,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         protected void onPostExecute(DataFilterByLatLng dataFilterByLatLng)
         {
+            // todo: handle a merge from a read-in-struct, to one learned while awaiting file load
             mSignalData = dataFilterByLatLng;
+            mSignalDataLoaded = true;
             if (!mSignalData.initShapesPlottedIfNeeded())
             {
                 Log.w("InitShapes", "Unexpectedly didn't need to init shapes after file read.");
@@ -114,6 +120,8 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mTelephonyManager = (TelephonyManager) this.getSystemService(Context.TELEPHONY_SERVICE);
         mCircleQRecent = new LinkedList<>();
         mCircleQRecentSignal = new LinkedList<>();
+
+        mSignalDataLoaded = false;
         mSignalData = new DataFilterByLatLng();
         new OpenFileTask().execute(); // load mSignalData, in other thread, to avoid delay
 
@@ -170,7 +178,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         {
             mMap.moveCamera(CameraUpdateFactory.zoomTo(DEFAULT_ZOOM));
         }
-        if (mCurrentTarget != null) // todo: context-save these values so this actually works
+        if (mCurrentTarget != null)
         {
             mMap.moveCamera(CameraUpdateFactory.newLatLng(mCurrentTarget));
         }
@@ -289,17 +297,44 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                     mGoogleApiClient, this);
         }
 
-        // Todo: figure out how to do this in a different thread - like the read, but avoiding a collision with the read...
-        try
+        if (mSignalDataLoaded) // only write out, if data has been loaded from file - to avoid losing data on a write before the async read has completed
         {
-            FileOutputStream fos = openFileOutput(FILENAME, Context.MODE_PRIVATE);
-            ObjectOutputStream oos = new ObjectOutputStream(fos);
-            oos.writeObject(mSignalData);
-            oos.close();
-        }
-        catch (java.io.IOException e)
-        {
-            Log.w("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
+            // todo: make a function out of this block
+            // Todo: figure out how to do this in a different thread - like the read, but avoiding a collision with the read...
+            // todo: think through whether this has race condition fails - e.g. this thread still writing while main thread tries to read..., or vice versa
+            try {
+                // write to temp file, then copy over to main file when complete
+
+                String strTempFileName = FILENAME + "Temp";
+                FileOutputStream fosTemp = openFileOutput(strTempFileName, Context.MODE_PRIVATE);
+                mSignalData.writeToFile(fosTemp);
+                fosTemp.close();
+
+                String strFileNameOld = FILENAME + "Old";
+                File old = getFileStreamPath(strFileNameOld);
+                File to = getFileStreamPath(FILENAME);
+                File from = getFileStreamPath(strTempFileName);
+
+                if (to.exists()) {
+                    if (!to.renameTo(old)) {
+                        Log.e("File", "Couldn't rename to to old file on write");
+                    }
+                }
+                if (!from.exists()) {
+                    Log.e("File", "Can't find from file " + from.getPath());
+                }
+                if (!from.renameTo(to)) {
+                    Log.e("File", "Couldn't rename file from-to-to on write. From: " + from.getName() + " To: " + to.getName());
+                }
+
+                /*
+                ObjectOutputStream oos = new ObjectOutputStream(fos);
+                oos.writeObject(mSignalData);
+                oos.close();
+                */
+            } catch (java.io.IOException e) {
+                Log.w("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
+            }
         }
     }
 
