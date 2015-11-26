@@ -31,6 +31,7 @@ import android.telephony.CellInfoLte;
 import android.telephony.CellSignalStrengthLte;
 import android.telephony.TelephonyManager;
 import android.util.Log;
+import android.view.MotionEvent;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -51,7 +52,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private Queue<Circle> mCircleQRecent;
     private Queue<Circle> mCircleQRecentSignal;
     private boolean mMapTrackCurrentLocation;
-    private boolean mMapTrackCurrentLocationJustSet;
 
     private DataFilterByLatLng mSignalData; // todo - test putting this outside the activity, so it persists on screen rotation
     private boolean mSignalDataLoaded;
@@ -90,11 +90,12 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         protected void onPostExecute(DataFilterByLatLng dataFilterByLatLng)
         {
             // todo: handle a merge from a read-in-struct, to one learned while awaiting file load
+            mSignalData.clearShapes();
             mSignalData = dataFilterByLatLng;
             mSignalDataLoaded = true;
-            if (!mSignalData.initShapesPlottedIfNeeded())
+            if (mMap != null) // if it's ready
             {
-                Log.w("InitShapes", "Unexpectedly didn't need to init shapes after file read.");
+                mSignalData.drawShapes(mMap);
             }
         }
     }
@@ -125,8 +126,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mSignalData = new DataFilterByLatLng();
         new OpenFileTask().execute(); // load mSignalData, in other thread, to avoid delay
 
-        mMapTrackCurrentLocation = false;
-        mMapTrackCurrentLocationJustSet = false;
+        mMapTrackCurrentLocation = false; // todo: make unstick on user-pan (not on track-pan)
 
         // Load settings
         SharedPreferences settings = getSharedPreferences(PREFS_MAP, 0);
@@ -194,14 +194,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 // check if changed, and if so, save to check next time & redraw
                 if ((cameraPosition.zoom != mCurrentZoom)||
                     (cameraPosition.target != mCurrentTarget)) {
-                    // turn off tracking mode
-                    if (mMapTrackCurrentLocationJustSet) {
-                        mMapTrackCurrentLocationJustSet = false;
-                    }
-                    else {
-                        mMapTrackCurrentLocation = false; // todo - fix this, because this turns off in response to the original move
-                        Log.d("Track", "off");
-                    }
 
                     mCurrentZoom = cameraPosition.zoom;
                     mCurrentTarget = cameraPosition.target;
@@ -224,10 +216,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             @Override
             public boolean onMyLocationButtonClick()
             {
-                // turn on tracking mode
-                mMapTrackCurrentLocation = true;
-                mMapTrackCurrentLocationJustSet = true;
-                Log.d("Track", "on");
+                // toggle tracking mode
+                mMapTrackCurrentLocation = !mMapTrackCurrentLocation;
+                Log.d("Track", "changed to " + mMapTrackCurrentLocation);
                 return false;
             }
         });
@@ -269,7 +260,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
          if (mMapTrackCurrentLocation)
          {
-             mMap.moveCamera(CameraUpdateFactory.newLatLng(myLatLng));
+             mMap.animateCamera(CameraUpdateFactory.newLatLng(myLatLng));
          }
     }
 
@@ -284,7 +275,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     public void onResume(){
         super.onResume();
         Log.d("on", "onResume fired......");
-        startLocationUpdates(mGoogleApiClient);
+        startLocationUpdates(mGoogleApiClient, true);
     }
 
     public void onPause() {
@@ -295,13 +286,14 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         {
             LocationServices.FusedLocationApi.removeLocationUpdates(
                     mGoogleApiClient, this);
+            startLocationUpdates(mGoogleApiClient, false); // slow updates
         }
 
         if (mSignalDataLoaded) // only write out, if data has been loaded from file - to avoid losing data on a write before the async read has completed
         {
             // todo: make a function out of this block
             // Todo: figure out how to do this in a different thread - like the read, but avoiding a collision with the read...
-            // todo: think through whether this has race condition fails - e.g. this thread still writing while main thread tries to read..., or vice versa
+            // todo: think through whether this has race condition fails - e.g. this thread still writing while main thread tries to read...
             try {
                 // write to temp file, then copy over to main file when complete
 
@@ -327,11 +319,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                     Log.e("File", "Couldn't rename file from-to-to on write. From: " + from.getName() + " To: " + to.getName());
                 }
 
-                /*
-                ObjectOutputStream oos = new ObjectOutputStream(fos);
-                oos.writeObject(mSignalData);
-                oos.close();
-                */
             } catch (java.io.IOException e) {
                 Log.w("File", "Couldn't save data to " + FILENAME + " " + e.getMessage());
             }
@@ -357,22 +344,20 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     public void onConnected(Bundle bundle)
     {
         Log.d("on", "onConnected (GoogleApiClient) - isConnected ...............: " + mGoogleApiClient.isConnected());
-        startLocationUpdates(mGoogleApiClient);
+        startLocationUpdates(mGoogleApiClient, true);
     }
 
     @Override
     public void onConnectionSuspended(int i) {
         Log.d("on", "onConnectedSuspended (GoogleApiClient) - isConnected ...............: " + mGoogleApiClient.isConnected());
-
-
     }
 
     @Override
     public void onConnectionFailed(ConnectionResult connectionResult) {
-
+        Log.w("on", "onConnectionFailed (GoogleApiClient)");
     }
 
-    private void startLocationUpdates(GoogleApiClient googleApiClient)
+    private void startLocationUpdates(GoogleApiClient googleApiClient, boolean bActive)
     {
         if ((googleApiClient == null) ||
             (!googleApiClient.isConnected()))
@@ -381,16 +366,27 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             // this is also called at OnConnected, so will kick things off then
             return;
         }
-        LocationRequest locationRequest = new LocationRequest()
-                .setInterval(1000)
-                .setFastestInterval(500)
-                .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+        LocationRequest locationRequest = new LocationRequest();
+
+        if (bActive) {
+            locationRequest.setInterval(1000)
+                    .setFastestInterval(500)
+                    .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+        }
+        else
+        // do a background location updates thing, w/geofence niceness to the slower of every 100m or every 1 minute
+        // todo: test this
+        {
+            locationRequest.setFastestInterval(60000)
+                    .setSmallestDisplacement(100)
+                    .setPriority(LocationRequest.PRIORITY_BALANCED_POWER_ACCURACY);
+        }
 
         LocationServices.FusedLocationApi.requestLocationUpdates(
                 googleApiClient, locationRequest, this);
     }
 
-    protected int getLteSignalAsGreenLevel()
+    private int getLteSignalAsGreenLevel()
     {
         int iGreenLevel = 0;
 
@@ -438,7 +434,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         return iGreenLevel;
     }
 
-    protected void updateRecentCircles(Location location)
+    private void updateRecentCircles(Location location)
     {
         LatLng myLatLng = new LatLng(location.getLatitude(), location.getLongitude());
 
@@ -452,5 +448,15 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         {
             mCircleQRecent.remove().remove(); // remove from list, then from map
         }
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event)
+    {
+        boolean bReturnMe = super.onTouchEvent(event);
+        // turn off tracking
+        mMapTrackCurrentLocation = false; // todo: Still doesn't work - this doesn't appear to be called - maybe kill this method, and try something else....
+        Log.d("Track", "changed to false.");
+        return bReturnMe;
     }
 }

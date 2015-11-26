@@ -28,6 +28,13 @@ import java.util.Queue;
  */
 public class DataFilterByLatLng {
 
+    public void clearShapes() {
+        for(ShapeDrawnInfo shape : mShapesPlotted)
+        {
+            shape.mPolygon.remove();
+        }
+    }
+
     private class LatLonGridPoint
     {
         private double dGridScale = getGridScaleFromExponent(22); // 22 is default scale? not needed...  todo, reconsider & remove
@@ -176,9 +183,9 @@ public class DataFilterByLatLng {
         public Polygon mPolygon;
         public LatLonGridPoint mLatLonGridPoint;
     }
-    transient private HashSet<ShapeDrawnInfo> mShapesPlotted;
+    private HashSet<ShapeDrawnInfo> mShapesPlotted;
 
-    final int MAX_SHAPES_TO_PLOT = 300;
+    final int MAX_SHAPES_TO_PLOT = 400;
 
     // todo: make each grid it's own class?
     final int[] maiGridScaleExp = { 9, 12, 14, 16, 17, 18, 19, 20, 21, 22 };
@@ -344,7 +351,7 @@ public class DataFilterByLatLng {
 
         // todo-test: have track me stick when clicking the center-on-me, and un-stick on pan
 
-        // this should be done at deserializaiton - warn if not
+        // this should be done at file load - warn if not
         if (initShapesPlottedIfNeeded())
         {
             Log.w("ShapesInit", "Was Null, needed re-init, in drawShapes (location)");
@@ -375,7 +382,7 @@ public class DataFilterByLatLng {
             final int color = colorFromGreenLevel(iGreenLevel);
 
             boolean bFoundAndUpdated = false;
-            for(ShapeDrawnInfo shape : mShapesPlotted)
+            for(ShapeDrawnInfo shape : mShapesPlotted) // todo: something more efficient that brute force search for shape
             {
                 if (shape.mLatLonGridPoint.equals(latLonGridPoint))
                 {
@@ -416,7 +423,7 @@ public class DataFilterByLatLng {
 
         LatLngBounds latLngBounds = googleMap.getProjection().getVisibleRegion().latLngBounds;
 
-        // this should be done at deserializaiton - warn if not
+        // this should be done at file load - warn if not
         if (initShapesPlottedIfNeeded())
         {
             Log.w("ShapesInit", "Was Null, needed re-init, in drawShapes (location)");
@@ -435,6 +442,27 @@ public class DataFilterByLatLng {
         // only remove & add those that changed
         drawListedShapes(listShapesToRemove, latLonGridPointSetAdd, iScale,
                          mMapSignalData, googleMap);
+
+         /* todo - complete & then iterate on multiple levels of zoom, no-transparency, the following to draw to a canvas/bitmap, then put the bitmap on the mMap
+           todo - start with just a simple drawing, of the hexes at one level of zoom - trying to repro existing behavior, then draw two layers, then draw
+                  multiple layers, including returning refined versions, from another thread to avoid slowing things down...  and finally, update with a
+                  draw efficiency thing that simply updates the bitmap...
+        Bitmap b = Bitmap.createBitmap(2048, 2048, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(b);
+        Paint paint = new Paint();
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(colorFromGreenLevel(iGreenLevel));
+        Path path = new Path(); // todo draw the path
+        canvas.drawPath(path, paint);
+
+        BitmapDescriptor image = new BitmapDescriptor();
+        LatLngBounds latLngBounds = new LatLngBounds();
+
+        GroundOverlay groundOverlay = googleMap.addGroundOverlay(new GroundOverlayOptions()
+                .image(image)
+                .positionFromBounds(latLngBounds)
+                .transparency(0.5f));
+        */
     }
 
     private void drawListedShapes( List<ShapeDrawnInfo> listShapesToRemove,
@@ -476,26 +504,7 @@ public class DataFilterByLatLng {
             }
         }
 
-        /* todo - complete & then iterate on multiple levels of zoom, no-transparency, the following to draw to a canvas/bitmap, then put the bitmap on the mMap
-           todo - start with just a simple drawing, of the hexes at one level of zoom - trying to repro existing behavior, then draw two layers, then draw
-                  multiple layers, including returning refined versions, from another thread to avoid slowing things down...  and finally, update with a
-                  draw efficiency thing that simply updates the bitmap...
-        Bitmap b = Bitmap.createBitmap(2048, 2048, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(b);
-        Paint paint = new Paint();
-        paint.setStyle(Paint.Style.FILL);
-        paint.setColor(colorFromGreenLevel(iGreenLevel));
-        Path path = new Path(); // todo draw the path
-        canvas.drawPath(path, paint);
 
-        BitmapDescriptor image = new BitmapDescriptor();
-        LatLngBounds latLngBounds = new LatLngBounds();
-
-        GroundOverlay groundOverlay = googleMap.addGroundOverlay(new GroundOverlayOptions()
-                .image(image)
-                .positionFromBounds(latLngBounds)
-                .transparency(0.5f));
-        */
     }
 
     private int getScaleForCurrentCameraPosition(GoogleMap googleMap)
@@ -511,6 +520,27 @@ public class DataFilterByLatLng {
         return iScale;
     }
 
+    private LatLngBounds scaleLatLngBounds(LatLngBounds latLngBounds, float fScale) // todo: reuse in the bitmap thing
+    {
+        LatLngBounds llbReturnMe = latLngBounds;
+        if (fScale < 0.1)
+            fScale = 0.1f;
+        else if (fScale > 10.0)
+            fScale = 10.0f;
+
+        // max to sort-of avoid rollover at worlds edge - todo: make this better at world's edge
+        double latRange = Math.max(latLngBounds.northeast.latitude - latLngBounds.southwest.latitude, 0.0);
+        double lonRange = Math.max(latLngBounds.northeast.longitude - latLngBounds.southwest.longitude, 0.0);
+        LatLng latLngDoubleNe = new LatLng(latLngBounds.northeast.latitude + latRange/2.0 * (fScale-1), // -1 pulls back to center
+                latLngBounds.northeast.longitude + lonRange/2.0 * (fScale-1));
+        LatLng latLngDoubleSw = new LatLng(latLngBounds.southwest.latitude - latRange/2.0 * (fScale-1),
+                latLngBounds.southwest.longitude - lonRange/2.0 * (fScale-1));
+
+        llbReturnMe = llbReturnMe.including(latLngDoubleNe);
+        llbReturnMe = llbReturnMe.including(latLngDoubleSw);
+        return llbReturnMe;
+    }
+
     private void decideShapesToKeepAndNewShapes(LatLngBounds latLngBounds,
                                                 Map<LatLonGridPoint, DataPoint> mMapSignalData,
                                                 HashSet<ShapeDrawnInfo> setShapesPlotted,
@@ -518,19 +548,9 @@ public class DataFilterByLatLng {
                                                 HashSet<LatLonGridPoint> latLonGridPointSetAdd)
     {
         // create optional bigger bounds in which to put things
-        final int iBoundsScale = 2;
-        Queue<LatLonGridPoint> latLonGridPointListAddIfSpace = new LinkedList<>();
-        LatLngBounds latLngBoundsLarge = latLngBounds;
-        // max to avoid rollover at worlds edge
-        double latRange = Math.max(latLngBounds.northeast.latitude - latLngBounds.southwest.latitude, 0.0);
-        double lonRange = Math.max(latLngBounds.northeast.longitude - latLngBounds.southwest.longitude, 0.0);
-        LatLng latLngDoubleNe = new LatLng(latLngBounds.northeast.latitude + latRange/2.0 * (iBoundsScale-1),
-                                           latLngBounds.northeast.longitude + lonRange/2.0 * (iBoundsScale-1));
-        LatLng latLngDoubleSw = new LatLng(latLngBounds.southwest.latitude - latRange/2.0 * (iBoundsScale-1),
-                                           latLngBounds.southwest.longitude - lonRange/2.0 * (iBoundsScale-1));
 
-        latLngBoundsLarge = latLngBoundsLarge.including(latLngDoubleNe);
-        latLngBoundsLarge = latLngBoundsLarge.including(latLngDoubleSw);
+        Queue<LatLonGridPoint> latLonGridPointListAddIfSpace = new LinkedList<>();
+        LatLngBounds latLngBoundsLarge = scaleLatLngBounds(latLngBounds, 2); // todo: test
 
         // first make list of all points to add
         for (Map.Entry<LatLonGridPoint, DataPoint> entry : mMapSignalData.entrySet()) {
@@ -575,16 +595,18 @@ public class DataFilterByLatLng {
     public static int colorFromGreenLevel(int iGreenLevel)
     {
         // 00FF00 at 255
-        // 808000 at 192
+        // C0FF00 at 192
         // FFFF00 at 128
         // FF0000 at 0
         if (iGreenLevel >= 192 &&  iGreenLevel <= 255)
         {
-            return Color.argb(128, 511 - iGreenLevel * 2, 255 - (255-iGreenLevel)*2, 0);
+            // Red: 192->192, 255->0
+            return Color.argb(128, 192-(3*(iGreenLevel-192)), 255, 0);
         }
         else if (iGreenLevel >= 128 &&  iGreenLevel < 192)
         {
-            return Color.argb(128, 511 - iGreenLevel * 2, 255 - (iGreenLevel-128)*2, 0);
+            // Red: 128->255, 191->191
+            return Color.argb(128, (383-iGreenLevel), 255, 0);
         }
         else
         {
