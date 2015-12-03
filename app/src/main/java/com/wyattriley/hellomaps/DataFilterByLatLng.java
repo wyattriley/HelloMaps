@@ -1,10 +1,19 @@
 package com.wyattriley.hellomaps;
 
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.location.Location;
+import android.os.AsyncTask;
 import android.util.Log;
 
 import com.google.android.gms.maps.GoogleMap;
+import com.google.android.gms.maps.model.BitmapDescriptor;
+import com.google.android.gms.maps.model.BitmapDescriptorFactory;
+import com.google.android.gms.maps.model.GroundOverlay;
+import com.google.android.gms.maps.model.GroundOverlayOptions;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.LatLngBounds;
 import com.google.android.gms.maps.model.Polygon;
@@ -32,6 +41,14 @@ public class DataFilterByLatLng {
         for(ShapeDrawnInfo shape : mShapesPlotted)
         {
             shape.mPolygon.remove();
+        }
+    }
+
+    // todo: consider whether I need this
+    public void clearBitmap() {
+        if (mGroundOverlay != null) {
+            mGroundOverlay.remove();
+            mGroundOverlay = null;
         }
     }
 
@@ -131,7 +148,7 @@ public class DataFilterByLatLng {
     private class DataPoint {
         private int mNumSamples;
         private long mTotal; // todo: handle overflow/high numbers (cut in half when large enough)
-        private LatLonGridPoint mLatLonGridPoint;
+        private LatLonGridPoint mLatLonGridPoint; // todo: recall and doc. why this is needed when we have a map of these
 
         // for on-file-load
         public DataPoint(int iNumSamples, long lTotal, LatLonGridPoint latLonGridPoint) {
@@ -185,11 +202,15 @@ public class DataFilterByLatLng {
     }
     private HashSet<ShapeDrawnInfo> mShapesPlotted;
 
+    GroundOverlay mGroundOverlay;
+
     final int MAX_SHAPES_TO_PLOT = 400;
 
     // todo: make each grid it's own class?
     final int[] maiGridScaleExp = { 9, 12, 14, 16, 17, 18, 19, 20, 21, 22 };
     final int NUM_GRID_SCALES = 10;
+
+
 
     private List<Map<LatLonGridPoint, DataPoint>> mListMapSignalData;
 
@@ -289,7 +310,7 @@ public class DataFilterByLatLng {
         for (int iScale = 0; iScale < NUM_GRID_SCALES; iScale++)
         {
             int iGridScale = maiGridScaleExp[iScale];
-            Map<LatLonGridPoint, DataPoint> mMapSignalData = mListMapSignalData.get(iScale);
+            Map<LatLonGridPoint, DataPoint> mapSignalData = mListMapSignalData.get(iScale);
 
             final double dApproxGridSize = 6000000 * 6.28 / (1 << iGridScale);
 
@@ -311,12 +332,12 @@ public class DataFilterByLatLng {
             LatLonGridPoint indexGrid = new LatLonGridPoint(location, iGridScale);
             //Long index = indexGrid.hashForIndexing();
 
-            if (mMapSignalData.containsKey(indexGrid))
+            if (mapSignalData.containsKey(indexGrid))
             {
-                mMapSignalData.get(indexGrid).addData(iWeight, iValue);
+                mapSignalData.get(indexGrid).addData(iWeight, iValue);
                 /*
                 Log.d("Grid", "Updating Point w/value " + iValue + " total weight " +
-                mMapSignalData.get(index).mNumSamples);
+                mapSignalData.get(index).mNumSamples);
                 */
             }
             else
@@ -324,7 +345,7 @@ public class DataFilterByLatLng {
                 DataPoint dataPoint = new DataPoint(location, iGridScale);
                 dataPoint.addData(iWeight, iValue);
 
-                mMapSignalData.put(indexGrid, dataPoint);
+                mapSignalData.put(indexGrid, dataPoint);
                 Log.d("Grid", "New Point w/value " + iValue + " at grid loc " +
                         indexGrid.iLatGrid + ", " + indexGrid.iLonGrid + " hashcode: " + indexGrid );
             }
@@ -379,7 +400,7 @@ public class DataFilterByLatLng {
             }
 
             final int iGreenLevel = mapSignalData.get(latLonGridPoint).getAve();
-            final int color = colorFromGreenLevel(iGreenLevel);
+            final int color = colorFromGreenLevel(iGreenLevel, true);
 
             boolean bFoundAndUpdated = false;
             for(ShapeDrawnInfo shape : mShapesPlotted) // todo: something more efficient that brute force search for shape
@@ -430,45 +451,134 @@ public class DataFilterByLatLng {
         }
 
         int iScale = getScaleForCurrentCameraPosition(googleMap);
-        Map<LatLonGridPoint, DataPoint> mMapSignalData =
+        Map<LatLonGridPoint, DataPoint> mapSignalData =
           mListMapSignalData.get(iScale);
 
         List<ShapeDrawnInfo> listShapesToRemove = new LinkedList<>();
         HashSet<LatLonGridPoint> latLonGridPointSetAdd = new HashSet<>();
 
-        decideShapesToKeepAndNewShapes(latLngBounds, mMapSignalData, mShapesPlotted,
-                                       listShapesToRemove, latLonGridPointSetAdd);
+        decideShapesToKeepAndNewShapes(latLngBounds, mapSignalData, mShapesPlotted,
+                listShapesToRemove, latLonGridPointSetAdd);
 
         // only remove & add those that changed
         drawListedShapes(listShapesToRemove, latLonGridPointSetAdd, iScale,
-                         mMapSignalData, googleMap);
+                         mapSignalData, googleMap);
 
-         /* todo - complete & then iterate on multiple levels of zoom, no-transparency, the following to draw to a canvas/bitmap, then put the bitmap on the mMap
+        drawBitmap(googleMap);
+        // todo: figure out if I should refactor like this: LatLngDisplay latLngDisplay = new LatLngDisplay(mapSignalData, googleMap);
+        // with two selectable sub-classes - the one for hexes, and the one for bmp display?
+    }
+
+    private class HexMaker
+    {
+        // todo: use for both LL & non-LL hexes?
+        private LatLngBounds mLatLngBounds;
+        private int mIXPixels;
+        private int mIYPixels;
+        private double dScaleLonToXpix;
+        private double dScaleLatToYpix;
+
+        public HexMaker(LatLngBounds latLngBounds, int iXPix, int iYPix)
+        {
+            mLatLngBounds = latLngBounds;
+            mIXPixels = iXPix;
+            mIYPixels = iYPix;
+            dScaleLonToXpix = mIXPixels / (latLngBounds.northeast.longitude - latLngBounds.southwest.longitude);
+            dScaleLatToYpix = mIYPixels / (latLngBounds.northeast.latitude - latLngBounds.southwest.latitude);
+        }
+
+        private float scaleLonToXPix(double dLon)
+        {
+            float fReturnMe = (float)((dLon - mLatLngBounds.southwest.longitude) * dScaleLonToXpix);
+            return Math.min(Math.max(fReturnMe, 0), mIXPixels);
+        }
+
+        private float scaleLatToYPix(double dLat)
+        {
+            float fReturnMe = (float)((mLatLngBounds.northeast.latitude - dLat) * dScaleLatToYpix);
+            return Math.min(Math.max(fReturnMe, 0), mIYPixels);
+        }
+
+        public Path makePath(LatLonGridPoint mLatLonGridPoint)
+        {
+            List<LatLng> listLatLng = mLatLonGridPoint.getLatLngPoly();
+
+            Path path = new Path();
+            int iEnd = listLatLng.size() - 1;
+            path.moveTo(scaleLonToXPix(listLatLng.get(iEnd).longitude),
+                    scaleLatToYPix(listLatLng.get(iEnd).latitude));
+            for (LatLng latLng : listLatLng)
+            {
+                path.lineTo(scaleLonToXPix(latLng.longitude),
+                            scaleLatToYPix(latLng.latitude));
+            }
+            return path;
+        }
+    }
+
+    public void drawBitmap(GoogleMap gMap) {
+                 /* todo - complete & then iterate on multiple levels of zoom, no-transparency, the following to draw to a canvas/bitmap, then put the bitmap on the mMap
            todo - start with just a simple drawing, of the hexes at one level of zoom - trying to repro existing behavior, then draw two layers, then draw
                   multiple layers, including returning refined versions, from another thread to avoid slowing things down...  and finally, update with a
-                  draw efficiency thing that simply updates the bitmap...
-        Bitmap b = Bitmap.createBitmap(2048, 2048, Bitmap.Config.ARGB_8888);
+                  draw efficiency thing that simply updates the bitmap... */
+        if (null == gMap)
+        {
+            Log.e("draw", "gMap unexpectedly null in drawBitmap - skipping draw");
+            return;
+        }
+
+
+        final int iCanvasSize = 1024;
+        Bitmap b = Bitmap.createBitmap(iCanvasSize, iCanvasSize, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(b);
         Paint paint = new Paint();
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(colorFromGreenLevel(iGreenLevel));
-        Path path = new Path(); // todo draw the path
-        canvas.drawPath(path, paint);
+        LatLngBounds latLngBoundsLarge =
+                scaleLatLngBounds(gMap.getProjection().getVisibleRegion().latLngBounds, 1.2F);
 
-        BitmapDescriptor image = new BitmapDescriptor();
-        LatLngBounds latLngBounds = new LatLngBounds();
+        int iScaleIndexNominal = getScaleForCurrentCameraPosition(gMap);
+        int iScaleIndexMin = Math.max(iScaleIndexNominal - 1, 0);
+        // todo: consider stopping this at 3 if too detailed/slow to draw?
+        int iScaleIndexMax = Math.min(iScaleIndexNominal + 4, NUM_GRID_SCALES);
 
-        GroundOverlay groundOverlay = googleMap.addGroundOverlay(new GroundOverlayOptions()
-                .image(image)
-                .positionFromBounds(latLngBounds)
-                .transparency(0.5f));
-        */
+        for (int iScaleIndex = iScaleIndexMin; iScaleIndex < iScaleIndexMax; iScaleIndex++) {
+            boolean bTransparent = iScaleIndex < iScaleIndexNominal;
+            Map<LatLonGridPoint, DataPoint> mapSignalData =
+                    mListMapSignalData.get(iScaleIndex);
+
+            HexMaker hexMaker = new HexMaker(latLngBoundsLarge, iCanvasSize, iCanvasSize);
+
+            for (Map.Entry<LatLonGridPoint, DataPoint> entry : mapSignalData.entrySet()) {
+                if (latLngBoundsLarge.contains(entry.getValue().getLatLng())) {
+                    Path path = hexMaker.makePath(entry.getValue().mLatLonGridPoint);
+                    paint.setColor(colorFromGreenLevel(entry.getValue().getAve(), bTransparent));
+                    canvas.drawPath(path, paint);
+                }
+            }
+        }
+
+        // todo: apparently the following line is slow, so perhaps using tile overlays makes more sense
+        BitmapDescriptor image = BitmapDescriptorFactory.fromBitmap(b);
+
+        if (null != mGroundOverlay)
+        {
+            //mGroundOverlay.remove();
+            mGroundOverlay.setPositionFromBounds(latLngBoundsLarge);
+            mGroundOverlay.setImage(image); // todo: figure out why this line crashes sometimes - maybe clearbitmap related?
+            // and/or related to the location changed response that comes in for previous activity?
+        }
+        else {
+            mGroundOverlay = gMap.addGroundOverlay(new GroundOverlayOptions()
+                    .image(image)
+                    .positionFromBounds(latLngBoundsLarge)
+                    .transparency(0.5f));
+        }
     }
 
     private void drawListedShapes( List<ShapeDrawnInfo> listShapesToRemove,
                                    HashSet<LatLonGridPoint> latLonGridPointSetAdd,
                                    int iGridScaleIndex,
-                                   Map<LatLonGridPoint, DataPoint> mMapSignalData,
+                                   Map<LatLonGridPoint, DataPoint> mapSignalData,
                                    GoogleMap googleMap)
     {
         Log.d("Draw", "StrengthGrid: removing " + listShapesToRemove.size() +
@@ -485,7 +595,7 @@ public class DataFilterByLatLng {
 
         for (LatLonGridPoint latLonGridPoint : latLonGridPointSetAdd)
         {
-            final DataPoint dataPoint = mMapSignalData.get(latLonGridPoint);
+            final DataPoint dataPoint = mapSignalData.get(latLonGridPoint);
             final int iGreenLevel = dataPoint.getAve();
 
             ShapeDrawnInfo shapeDrawnInfo = new ShapeDrawnInfo();
@@ -493,7 +603,7 @@ public class DataFilterByLatLng {
                     .strokeWidth(0)
                     .strokeColor(Color.GRAY)
                     .addAll(dataPoint.getLatLngPoly())
-                    .fillColor(colorFromGreenLevel(iGreenLevel)));
+                    .fillColor(colorFromGreenLevel(iGreenLevel, true)));
             shapeDrawnInfo.mLatLonGridPoint = latLonGridPoint;
             mShapesPlotted.add(shapeDrawnInfo);
 
@@ -542,7 +652,7 @@ public class DataFilterByLatLng {
     }
 
     private void decideShapesToKeepAndNewShapes(LatLngBounds latLngBounds,
-                                                Map<LatLonGridPoint, DataPoint> mMapSignalData,
+                                                Map<LatLonGridPoint, DataPoint> mapSignalData,
                                                 HashSet<ShapeDrawnInfo> setShapesPlotted,
                                                 List<ShapeDrawnInfo> listShapesToRemove,
                                                 HashSet<LatLonGridPoint> latLonGridPointSetAdd)
@@ -550,10 +660,10 @@ public class DataFilterByLatLng {
         // create optional bigger bounds in which to put things
 
         Queue<LatLonGridPoint> latLonGridPointListAddIfSpace = new LinkedList<>();
-        LatLngBounds latLngBoundsLarge = scaleLatLngBounds(latLngBounds, 2); // todo: test
+        LatLngBounds latLngBoundsLarge = scaleLatLngBounds(latLngBounds, 2);
 
         // first make list of all points to add
-        for (Map.Entry<LatLonGridPoint, DataPoint> entry : mMapSignalData.entrySet()) {
+        for (Map.Entry<LatLonGridPoint, DataPoint> entry : mapSignalData.entrySet()) {
             if (latLngBounds.contains(entry.getValue().getLatLng()))
             {
                 // want to be on new screen - decide keep, or add
@@ -592,25 +702,30 @@ public class DataFilterByLatLng {
         mShapesPlotted = new HashSet<>();
     }
 
-    public static int colorFromGreenLevel(int iGreenLevel)
+    public static int colorFromGreenLevel(int iGreenLevel, boolean bTransparent)
     {
         // 00FF00 at 255
         // C0FF00 at 192
         // FFFF00 at 128
         // FF0000 at 0
+        int alpha = 128;
+        if (!bTransparent)
+        {
+            alpha = 255;
+        }
         if (iGreenLevel >= 192 &&  iGreenLevel <= 255)
         {
             // Red: 192->192, 255->0
-            return Color.argb(128, 192-(3*(iGreenLevel-192)), 255, 0);
+            return Color.argb(alpha, 192-(3*(iGreenLevel-192)), 255, 0);
         }
         else if (iGreenLevel >= 128 &&  iGreenLevel < 192)
         {
             // Red: 128->255, 191->191
-            return Color.argb(128, (383-iGreenLevel), 255, 0);
+            return Color.argb(alpha, (383-iGreenLevel), 255, 0);
         }
         else
         {
-            return Color.argb(128, 255, iGreenLevel * 2, 0);
+            return Color.argb(alpha, 255, iGreenLevel * 2, 0);
         }
     }
 }
