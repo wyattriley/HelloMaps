@@ -6,7 +6,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.location.Location;
-import android.os.AsyncTask;
 import android.util.Log;
 
 import com.google.android.gms.maps.GoogleMap;
@@ -50,7 +49,10 @@ public class DataFilterByLatLng {
             mGroundOverlay.remove();
             mGroundOverlay = null;
         }
-    }
+        if (mGroundOverlayCoarse != null) {  // todo: use or remove
+            mGroundOverlayCoarse.remove();
+            mGroundOverlayCoarse = null;
+        }    }
 
     private class LatLonGridPoint
     {
@@ -203,6 +205,7 @@ public class DataFilterByLatLng {
     private HashSet<ShapeDrawnInfo> mShapesPlotted;
 
     GroundOverlay mGroundOverlay;
+    GroundOverlay mGroundOverlayCoarse;
 
     final int MAX_SHAPES_TO_PLOT = 400;
 
@@ -370,7 +373,7 @@ public class DataFilterByLatLng {
 
         // todo: have the live circles on by default, be menu selectable off
 
-        // todo-test: have track me stick when clicking the center-on-me, and un-stick on pan
+        // todo: have track me stick when clicking the center-on-me, and un-stick on pan (not just toggle as it is as of 12/2)
 
         // this should be done at file load - warn if not
         if (initShapesPlottedIfNeeded())
@@ -462,9 +465,8 @@ public class DataFilterByLatLng {
 
         // only remove & add those that changed
         drawListedShapes(listShapesToRemove, latLonGridPointSetAdd, iScale,
-                         mapSignalData, googleMap);
+                mapSignalData, googleMap);
 
-        drawBitmap(googleMap);
         // todo: figure out if I should refactor like this: LatLngDisplay latLngDisplay = new LatLngDisplay(mapSignalData, googleMap);
         // with two selectable sub-classes - the one for hexes, and the one for bmp display?
     }
@@ -490,6 +492,7 @@ public class DataFilterByLatLng {
         private float scaleLonToXPix(double dLon)
         {
             float fReturnMe = (float)((dLon - mLatLngBounds.southwest.longitude) * dScaleLonToXpix);
+            // todo: try drawing beyond the bounds and see if you get nice clipping (vs. current squashed hexagons)
             return Math.min(Math.max(fReturnMe, 0), mIXPixels);
         }
 
@@ -516,25 +519,34 @@ public class DataFilterByLatLng {
         }
     }
 
-    public void drawBitmap(GoogleMap gMap) {
-                 /* todo - complete & then iterate on multiple levels of zoom, no-transparency, the following to draw to a canvas/bitmap, then put the bitmap on the mMap
-           todo - start with just a simple drawing, of the hexes at one level of zoom - trying to repro existing behavior, then draw two layers, then draw
-                  multiple layers, including returning refined versions, from another thread to avoid slowing things down...  and finally, update with a
-                  draw efficiency thing that simply updates the bitmap... */
+    public void draw(GoogleMap gMap)
+    {
+        // todo - if so configured, call drawShapes?  E.g. on lower memory devices?
+        // todo - test - call the drawBitmap (make func.) twice, one for non-detailed map at 512, at scale 3F in background (doesn't work due to overlay of transparency - use TileProvider instead...)
+        //drawBitmap(gMap, 512, 3.0F, 0, mGroundOverlayCoarse); todo - figure out
+        drawBitmap(gMap, 1024, 1.1F); // for some reason, passing in the mGroundOverlay as a parameter leaks memmory - probably not getting the reference right...
+    }
+
+    public void drawBitmap(GoogleMap gMap, int iCanvasSize, float fScaleBeyondScreen) {
+                 /* todo 14: try returning multiple bmp's, at different levels of refinement, for higher speed drawing,
+                    interruptible on another scroll/pan/zoom
+                    todo - try doing much work in another thread (simple AsyncThread?) to keep UI super smooth
+                    todo - add something that simply updates the existing bitmap, within the central area more affected by the
+                    current location, on 'add data' for efficiency (like the drawShapes had) - maybe just the center 1/4 or 1/16 of the image??
+                     */
         if (null == gMap)
         {
             Log.e("draw", "gMap unexpectedly null in drawBitmap - skipping draw");
             return;
         }
 
-
-        final int iCanvasSize = 1024;
         Bitmap b = Bitmap.createBitmap(iCanvasSize, iCanvasSize, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(b);
         Paint paint = new Paint();
         paint.setStyle(Paint.Style.FILL);
+        paint.setStrokeWidth(0); // hairline
         LatLngBounds latLngBoundsLarge =
-                scaleLatLngBounds(gMap.getProjection().getVisibleRegion().latLngBounds, 1.2F);
+                scaleLatLngBounds(gMap.getProjection().getVisibleRegion().latLngBounds, fScaleBeyondScreen);
 
         int iScaleIndexNominal = getScaleForCurrentCameraPosition(gMap);
         int iScaleIndexMin = Math.max(iScaleIndexNominal - 1, 0);
@@ -542,7 +554,8 @@ public class DataFilterByLatLng {
         int iScaleIndexMax = Math.min(iScaleIndexNominal + 4, NUM_GRID_SCALES);
 
         for (int iScaleIndex = iScaleIndexMin; iScaleIndex < iScaleIndexMax; iScaleIndex++) {
-            boolean bTransparent = iScaleIndex < iScaleIndexNominal;
+            boolean bTransparent = maiGridScaleExp[iScaleIndex] < 20; // for absolute sizes >50m being blurred a bit.
+            // was iScaleIndex <= iScaleIndexNominal; for relative
             Map<LatLonGridPoint, DataPoint> mapSignalData =
                     mListMapSignalData.get(iScaleIndex);
 
@@ -553,25 +566,32 @@ public class DataFilterByLatLng {
                     Path path = hexMaker.makePath(entry.getValue().mLatLonGridPoint);
                     paint.setColor(colorFromGreenLevel(entry.getValue().getAve(), bTransparent));
                     canvas.drawPath(path, paint);
+
+                    if (iScaleIndex < iScaleIndexMax - 1) // thin line all by finest
+                    {
+                        paint.setStyle(Paint.Style.STROKE);
+                        paint.setColor(Color.GRAY);
+                        canvas.drawPath(path, paint);
+                        paint.setStyle(Paint.Style.FILL); // reset for next hex
+                    }
                 }
             }
         }
 
-        // todo: apparently the following line is slow, so perhaps using tile overlays makes more sense
+        // todo 15: apparently the following line is slow, so perhaps using tile overlays makes more sense
         BitmapDescriptor image = BitmapDescriptorFactory.fromBitmap(b);
 
         if (null != mGroundOverlay)
         {
-            //mGroundOverlay.remove();
             mGroundOverlay.setPositionFromBounds(latLngBoundsLarge);
             mGroundOverlay.setImage(image); // todo: figure out why this line crashes sometimes - maybe clearbitmap related?
             // and/or related to the location changed response that comes in for previous activity?
-        }
-        else {
+        } else {
             mGroundOverlay = gMap.addGroundOverlay(new GroundOverlayOptions()
                     .image(image)
                     .positionFromBounds(latLngBoundsLarge)
-                    .transparency(0.5f));
+                    //.zIndex(iZIndex)
+                    .transparency(0.5f)); // todo 13: retest this transparency, and scrolling smoothness
         }
     }
 
@@ -630,7 +650,7 @@ public class DataFilterByLatLng {
         return iScale;
     }
 
-    private LatLngBounds scaleLatLngBounds(LatLngBounds latLngBounds, float fScale) // todo: reuse in the bitmap thing
+    private LatLngBounds scaleLatLngBounds(LatLngBounds latLngBounds, float fScale)
     {
         LatLngBounds llbReturnMe = latLngBounds;
         if (fScale < 0.1)

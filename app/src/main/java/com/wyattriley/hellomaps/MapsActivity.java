@@ -56,7 +56,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private boolean mMapTrackCurrentLocation;
     private int mCountLocs;
 
-    private DataFilterByLatLng mSignalData; // todo - test putting this outside the activity, so it persists on screen rotation
+    private DataFilterByLatLng mSignalData; // todo - test putting this outside the activity, so it persists on screen rotation (static class or ?)
     private boolean mSignalDataLoaded;
     private float mCurrentZoom; // for redraw on zoom
     private LatLng mCurrentTarget; // for redraw on pan
@@ -66,30 +66,23 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     final int DEFAULT_ZOOM = 19;
     final String PREFS_MAP = "prefs_map";
 
-    private OpenFileTask mOpenFileTask; // keep for possible cancellation on quick exit?
+    private OpenFileTask mOpenFileTask; // todo: consider using for faster cancellation on quick exit?
 
     private static MyLocationListener smLocationListener;
     // 11:25pm 12/2 - making this class static... ? OMG finally this works, no leaks in the test prog.
+    // & later confirmed in the main prog.
     private static class MyLocationListener implements LocationListener
     {
         private MapsActivity mapsActivityRef;
 
-        // 11:30pm 12/2: - todo: remove all the unused code
-        // 10:50pm 12/2: - test this making a default constructor, not helpful
-        //public MyLocationListener() {};
-
         public void setRefActivity(MapsActivity mapsActivity)
         {
             mapsActivityRef = mapsActivity;
-            //Log.d("Memory", "smLocationListener " + this.toString() +
-            //        " set to reference this activity " + mapsActivityRef.toString());
         }
 
         @Override
         public void onLocationChanged(Location location)
         {
-            //Log.d("Memory", "smLocationLister w/hash: " + this.toString() +
-            //        " received location changed, send to activity " + mapsActivityRef.toString());
             if (null != mapsActivityRef) {
                 mapsActivityRef.onLocationChanged(location);
             }
@@ -117,15 +110,18 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     {
         // todo someday: handle a merge from a read-in-struct, to one learned while awaiting file load
         //mSignalData.clearShapes();
+        if (null == mSignalData)
+        {
+            Log.i("null", "mSignalData null on the finish of loading, not loading it");
+            return;
+        }
         mSignalData.clearBitmap();
         mSignalData = d;
         Log.d("Memory", "mSignalData set on load in activity w/hash:" + this.hashCode());
         mSignalDataLoaded = true;
         if (mMap != null) // if it's ready
         {
-            // todo: change to .draw, and have that call old or new...
-            mSignalData.drawBitmap(mMap);
-            //mSignalData.drawShapes(mMap);
+            mSignalData.draw(mMap);
         }
     }
 
@@ -142,12 +138,14 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
     }
 
-    // 12/2: tested this, and it wasn't the only/final cause of activity leaks
-    // todo: retest now that the major LocationListener leak is fixed
+    /* 12/3, 9:47AM - not needed, in multiple tries open/clsoe fast, screen rotates/closes -
+       no leaks appear to be caused by the async task form of this
+
     private void openFileNotTask()
     {
         updateDataAndDrawPostLoad(readDataFromFile());
     }
+    */
 
     @Override
     protected void onCreate(Bundle savedInstanceState)
@@ -175,11 +173,12 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mSignalData = new DataFilterByLatLng();
         Log.d("Memory", "mSignalData new'ed on create in activity w/hash:" + this.hashCode());
 
-        /*mOpenFileTask =
+        // todo 1: add a text line (center top?) for status esp. of these async tasks
+        mOpenFileTask =
                 new OpenFileTask();
         mOpenFileTask.execute(); // load mSignalData, in other thread, to avoid delay
-        */
-        openFileNotTask();
+
+        //openFileNotTask();
 
         mMapTrackCurrentLocation = false; // todo: make unstick on user-pan (not on track-pan)
 
@@ -252,20 +251,16 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                     mCurrentZoom = cameraPosition.zoom;
                     mCurrentTarget = cameraPosition.target;
                     //mSignalData.drawShapes(mMap);
-                    mSignalData.drawBitmap(mMap);
+                    if (null == mSignalData)
+                    {
+                        Log.e("null", "onCameraChange couldn't draw a null mSignalData");
+                        return; // todo 2: debug why I hit this (on restoring a long sleeping app) on 12/3 12:20am
+                    }
+                    mSignalData.draw(mMap);
                 }
 
             }
         });
-
-        /* For debug - a starting Hello Maps marker
-
-        mMap.addMarker(new MarkerOptions().position(myLatLng).title(
-                "My Last Known Location on Map Ready" at accuracy " + mLastLocation.getAccuracy() ));
-
-        mMap.addCircle(new CircleOptions()
-                .center(myLatLng)
-                .radius(oldLocation.getAccuracy()));*/
 
         mMap.setOnMyLocationButtonClickListener(new GoogleMap.OnMyLocationButtonClickListener() {
             @Override
@@ -276,9 +271,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 return false;
             }
         });
-
-        //mSignalData.drawShapes(mMap);// refresh after screen orientation change
-        mSignalData.drawBitmap(mMap);
+        mSignalData.draw(mMap);
     }
 
     public void onLocationChanged(Location location) {
@@ -297,31 +290,44 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
          mMap.animateCamera(CameraUpdateFactory.newLatLng(myLatLng));
         }
 
+        if (mSignalData == null)
+        {
+            Log.w("Memory", "Prevented adding data to null mSignalData in activity w/hash: " + this.hashCode() +
+                            "Apparently happens after onDestroy, before the activity actually dies, when that activity still" +
+                    "gets hit with an incoming onLocationChanged.");
+            /* ViewRootImpl error in here typically hits around the same time:
+             http://stackoverflow.com/questions/18028666/senduseractionevent-is-null
+             suggests this is due to a particular type of SS devices (of which mine is one) that keep the old activity
+             alive a bit too long.
+             So even though this is only set to null, in onDestroy
+                and it is cleanly new'ed in onCreate
+                it's apparently possible for an onLocationChanged to be digested in between
+
+            If so, this is the right thing to do, as it's a useless time to be updating the mSignalData...
+            */
+
+            return;
+        }
+
         // TODO: FIX TABS/INDENTS
         if (Settings.Global.getInt(
                 getContentResolver(),
                 Settings.Global.AIRPLANE_MODE_ON, 0) != 0) {
             Log.d("Telephony", "In airplane mode - not recording Lte Signal");
-            return;  // todo test this
+            return;  // todo 3 test this
         }
 
 
         int iGreenLevel = getLteSignalAsGreenLevel();
          // todo: track and map associated-Wifi signal strength too, toggling between the two per menu
 
-        if (mSignalData == null)
-        {
-            // todo: debug this - it appears to be hit when a location update pointing to an old thing comes in?
-            Log.e("Memory", "Almost added data to null mSignalData in activity w/hash: " + this.hashCode());
-            return;
-        }
         if (mSignalData.AddData(location, iGreenLevel))
         {
             // some data was added
             //todo: optimize this better than slowing it - e.g. do most work in an async task - and/or use tiles to update just the middle changed part...
             mCountLocs++;
             if (mCountLocs %5 == 0) {
-                mSignalData.drawBitmap(mMap);
+                mSignalData.draw(mMap);
             }
 
             //mSignalData.drawShapes(mMap, location);
@@ -352,31 +358,20 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     public void onResume(){
         super.onResume();
         Log.d("on", "onResume fired......");
-        // todo: try to simplify back to just startLocationUpdates?
-        if (mGoogleApiClient.isConnected()) {
-            LocationServices.FusedLocationApi.removeLocationUpdates(
-                    mGoogleApiClient, this);
-            startLocationUpdates(mGoogleApiClient, true);
-        }
+        startLocationUpdates(mGoogleApiClient, true);
     }
 
     public void onPause() {
         super.onPause();
         Log.d("on", "onPause fired ..............");
 
-        if (mGoogleApiClient.isConnected())
-        {
-            LocationServices.FusedLocationApi.removeLocationUpdates(
-                    mGoogleApiClient, this);
-            startLocationUpdates(mGoogleApiClient, false); // slow updates
-        }
+        startLocationUpdates(mGoogleApiClient, false); // slow updates
 
         if (mSignalDataLoaded) // only write out, if data has been loaded from file - to avoid losing data on a write before the async read has completed
         {
             long lFileSizeBytes = 0;
-            // todo: make a function out of this block
+            // todo 6: make a function out of this block
             // Todo: figure out how to do this in a different thread - like the read, but avoiding a collision with the read...
-            // todo: think through whether this has race condition fails - e.g. this thread still writing while main thread tries to read...
             try {
                 // write to temp file, then copy over to main file when complete
 
@@ -410,12 +405,12 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
             try {
                 // write to to external storage
-                // todo: check folder existence first
+                // todo 7: check folder existence first
                 // todo: only write on menu command
                 File external = new File(
                         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
                         "MapMySignal1_backup");
-                if (!external.exists() || // todo - test: only write on file size ~10% greater
+                if (!external.exists() || // todo 8 - test: only write on file size ~10% greater
                      external.length() < (long)((double)lFileSizeBytes * 0.9)) {
                     FileOutputStream fosExternal = new FileOutputStream(external);
                     mSignalData.writeToFile(fosExternal);
@@ -453,7 +448,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         // Save settings
         SharedPreferences settings = getSharedPreferences(PREFS_MAP, 0);
         SharedPreferences.Editor editor = settings.edit();
-        // todo: this whole thing shouldn't be needed as the maps activity is supposed to do this
+        // todo 9: this whole thing shouldn't be needed as the maps activity is supposed to do this
         // itself - just need to not move to 'here' simply on screen rotate?
         editor.putFloat("currentZoom", mCurrentZoom);
         if (mCurrentTarget != null) {
@@ -462,7 +457,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
         editor.apply();
 
-        // todo: try removing much of the below if it 's not needed w.r.t. activity leaks
+        // todo 10: try removing much of the below if it 's not needed w.r.t. activity leaks
         if(mGoogleApiClient != null) {
             mGoogleApiClient.unregisterConnectionCallbacks(this);
             mGoogleApiClient.unregisterConnectionFailedListener(this);
@@ -481,7 +476,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             mSignalData.clearBitmap();
             mSignalData = null;
             Log.d("Memory", "mSignalData nulled on destroy in activity w/hash:" + this.hashCode());
-            // todo: then fix the lossiness, first via 'inner static class', then via service & intent - so much to learn!
         }
         else
         {
@@ -489,7 +483,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
         mCircleQRecentSignal.clear(); // deleting the references to objects to ensure the map can be killed w/o leaking
 
-        // todo: try unwinding some of this, just to see if it's needed. w.r.t. activity fragment view leakage
+        // todo 11: try unwinding some of this, just to see if it's needed. w.r.t. activity fragment view leakage
         if (mMap != null)
         {
             Log.d("on", "onDestory Map MyLocation disabled, and cleared");
@@ -501,7 +495,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
 
 
-        //mOpenFileTask.cancel(true); // todo: check if I need to wait for this to be canceled?
+        //mOpenFileTask.cancel(true); // todo 1: check if I need to wait for this to be canceled?
     }
 
     @Override
@@ -541,11 +535,17 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
         else
         // do a background location updates thing, w/geofence niceness to the slower of every 100m or every 1 minute
-        // todo: test this - and probably set up in a service as this won't work much of the time
+        // todo: test this - and probably set up in a service as this won't work much of the time??
+        // 12/4, Noon: confirmed note working even after a simple OnStop()
         {
+            // for test purposes, try this medium speed
+            locationRequest.setInterval(3000).setFastestInterval(2000)
+                    .setPriority(LocationRequest.PRIORITY_BALANCED_POWER_ACCURACY);
+            /*
             locationRequest.setFastestInterval(60000)
                     .setSmallestDisplacement(100)
                     .setPriority(LocationRequest.PRIORITY_BALANCED_POWER_ACCURACY);
+                    */
         }
         LocationServices.FusedLocationApi.requestLocationUpdates(
                 mGoogleApiClient, locationRequest, MapsActivity.smLocationListener);
@@ -621,7 +621,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     {
         boolean bReturnMe = super.onTouchEvent(event);
         // turn off tracking
-        mMapTrackCurrentLocation = false; // todo: Still doesn't work - this doesn't appear to be called - maybe kill this method, and try something else....
+        mMapTrackCurrentLocation = false; // todo 12: Still doesn't work - this doesn't appear to be called - maybe kill this method, and try something else....
         Log.d("Track", "changed to false.");
         return bReturnMe;
     }
